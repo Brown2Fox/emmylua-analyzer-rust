@@ -4224,23 +4224,24 @@ pub fn closure_param_vm(
     closure_syntax: LuaSyntaxId,
     param_index: usize,
 ) -> LuaType {
-    let Some(tree) = model.syntax_tree() else {
-        return LuaType::Unknown;
-    };
+    closure_param_binding(model, closure_syntax, param_index).unwrap_or(LuaType::Unknown)
+}
+
+/// Preserve the distinction between an explicit `unknown` callback type and no binding.
+pub(crate) fn closure_param_binding(
+    model: &SemanticModel,
+    closure_syntax: LuaSyntaxId,
+    param_index: usize,
+) -> Option<LuaType> {
+    let tree = model.syntax_tree()?;
     let root = tree.get_red_root();
-    let Some(node) = closure_syntax.to_node_from_root(&root) else {
-        return LuaType::Unknown;
-    };
-    let Some(closure) = LuaClosureExpr::cast(node) else {
-        return LuaType::Unknown;
-    };
+    let node = closure_syntax.to_node_from_root(&root)?;
+    let closure = LuaClosureExpr::cast(node)?;
     if model.is_closure_return_in_progress(closure_syntax) {
-        return LuaType::Unknown;
+        return None;
     }
     // Find the wrapping call.
-    let Some(call_expr) = closure.ancestors::<LuaCallExpr>().next() else {
-        return LuaType::Unknown;
-    };
+    let call_expr = closure.ancestors::<LuaCallExpr>().next()?;
     let mut code = Vec::new();
     compile(LuaExpr::CallExpr(call_expr), model.file_id(), &mut code);
     code.push(Instr::Result);
@@ -4249,7 +4250,6 @@ pub fn closure_param_vm(
     vm.closure_params
         .get(&(closure_syntax, param_index))
         .cloned()
-        .unwrap_or(LuaType::Unknown)
 }
 
 // ──────────────────────────────────────────────

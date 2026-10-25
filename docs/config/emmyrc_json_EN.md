@@ -296,6 +296,8 @@ Disabled by default:
 
 - `code-style-check`
 - `incomplete-signature-doc`
+- `no-implicit-any` (enabled by `strict.noImplicitAny`)
+- `unknown-operation` (enabled by `strict.checkUnknown`)
 - `missing-global-doc`
 - `unknown-doc-tag`
 - `non-literal-expressions-in-assert`
@@ -461,12 +463,78 @@ file's type/visibility metadata and disappear when the file is removed.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
+| `noImplicitAny` | `boolean` | `false` | Report function parameters without a declared or inferred type |
+| `checkUnknown` | `boolean` | `false` | Require narrowing unknown values before type-dependent operations |
 | `requirePath` | `boolean` | `false` | Require import paths must match configured module paths |
 | `typeCall` | `boolean` | `false` | Apply stricter checking to type calls |
 | `arrayIndex` | `boolean` | `true` | Apply stricter array index checks |
 | `metaOverrideFileDefine` | `boolean` | `true` | Meta definitions override file-local definitions |
 | `docBaseConstMatchBaseType` | `boolean` | `true` | Allow base constant doc types to match base scalar types |
 | `requireExportGlobal` | `boolean` | `false` | Third-party libraries must use `---@export global` before they become importable |
+
+#### Strict parameter checking
+
+```json
+{
+  "strict": {
+    "noImplicitAny": true
+  }
+}
+```
+
+This opt-in setting enables `no-implicit-any` errors on function parameters,
+including `...`, whose types are neither declared nor inferred. It accepts
+`@param`, typed function variables, inherited method signatures and typed callback
+parameters. Explicit `any` and `unknown` are allowed, including in contextual
+signatures. Unused parameter names are checked too; implicit method `self` is not
+an untyped source parameter.
+
+Library workspaces and `---@meta` files remain definition sources and produce no
+diagnostics. Their signatures still provide types to project code. The rule can
+also be enabled through `diagnostics.enables`; `diagnostics.disable`, severity
+overrides and inline diagnostic suppression apply normally.
+
+By itself, this option does not
+require annotations for inferred local variables, check untyped return values,
+ban explicit `any`, or restrict operations on `unknown`. Use
+`incomplete-signature-doc` separately when annotations themselves are required.
+
+#### Operations on unknown values
+
+```json
+{
+  "strict": {
+    "noImplicitAny": true,
+    "checkUnknown": true
+  }
+}
+```
+
+`checkUnknown` enables `unknown-operation` errors for calls, field reads/writes,
+computed table keys (including table constructors), arithmetic, concatenation,
+ordered comparisons, length and bitwise operators with unknown operands.
+Conditions, equality checks, `not`, `and`, `or` and nil coalescing are allowed.
+Explicit `any` remains an escape hatch.
+
+```lua
+---@param value unknown
+local function nextValue(value)
+  -- value + 1 would report unknown-operation here.
+  if type(value) == "number" then
+    return value + 1
+  end
+end
+```
+
+Flow narrowing applies at the operation, including guarded class fields. A nil
+check alone does not establish an operand type. Narrowing inside one branch does
+not make the value known after the branches merge. Unknown values may still be
+stored and passed around; this option does not yet change assignment, parameter
+or return compatibility rules. Library and meta definitions remain exempt, but
+unknown results from their APIs are checked when used in project code.
+
+The rule supports `diagnostics.enables`, `diagnostics.disable`, severity overrides
+and inline suppression, just like `no-implicit-any`.
 
 ### format
 

@@ -13,6 +13,12 @@ fn default_false() -> bool {
 #[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct EmmyrcStrict {
+    /// Report function parameters whose type cannot be inferred or explicitly declared.
+    #[serde(default)]
+    pub no_implicit_any: bool,
+    /// Require narrowing unknown values before type-dependent operations.
+    #[serde(default)]
+    pub check_unknown: bool,
     /// Whether to enable strict mode require path.
     #[serde(default)]
     pub require_path: bool,
@@ -32,6 +38,8 @@ pub struct EmmyrcStrict {
 impl Default for EmmyrcStrict {
     fn default() -> Self {
         Self {
+            no_implicit_any: false,
+            check_unknown: false,
             require_path: false,
             type_call: false,
             array_index: true,

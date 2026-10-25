@@ -80,9 +80,16 @@ impl CheckConfig {
                 }
             })
             .collect();
+        let mut enabled: HashSet<_> = emmyrc.diagnostics.enables.iter().copied().collect();
+        if emmyrc.strict.no_implicit_any {
+            enabled.insert(DiagnosticCode::NoImplicitAny);
+        }
+        if emmyrc.strict.check_unknown {
+            enabled.insert(DiagnosticCode::UnknownOperation);
+        }
         Self {
             disabled: emmyrc.diagnostics.disable.iter().cloned().collect(),
-            enabled: emmyrc.diagnostics.enables.iter().cloned().collect(),
+            enabled,
             severity: emmyrc
                 .diagnostics
                 .severity

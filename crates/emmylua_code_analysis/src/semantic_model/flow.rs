@@ -3852,6 +3852,24 @@ fn direct_narrow_member_condition(
         return None;
     }
     let (left, right) = binary.get_exprs()?;
+    // Type guards on fields must narrow the same receiver and access path.
+    let type_comparison = match (&left, &right) {
+        (LuaExpr::CallExpr(call), LuaExpr::LiteralExpr(lit))
+        | (LuaExpr::LiteralExpr(lit), LuaExpr::CallExpr(call)) => Some((call, lit)),
+        _ => None,
+    };
+    if let Some((call, lit)) = type_comparison
+        && let Some(LuaExpr::NameExpr(callee)) = call.get_prefix_expr()
+        && callee.get_name_text().as_deref() == Some("type")
+        && let Some(LuaExpr::IndexExpr(index)) = call.get_args_list()?.get_args().next()
+        && member_access_matches(model, member, access, &index)
+        && let Some(LuaLiteralToken::String(name)) = lit.get_literal()
+    {
+        return Some(Narrowing::FilterPrimitive {
+            primitive: primitive_type_from_name(&name.get_value())?,
+            keep_matching: branch_is_true == (op == BinaryOperator::OpEq),
+        });
+    }
     let (index_expr, lit_expr) = match (left, right) {
         (LuaExpr::IndexExpr(index), LuaExpr::LiteralExpr(lit)) => (index, lit),
         (LuaExpr::LiteralExpr(lit), LuaExpr::IndexExpr(index)) => (index, lit),
@@ -5349,7 +5367,7 @@ fn walk_decl(
             {
                 return trace_decl(model, decl, tree, common, options, mode, visited, path);
             }
-            let mut merged = LuaType::Unknown;
+            let mut merged = None;
             let branch_mode = TraceMode::MergeBranch;
             for branch in branches {
                 let mut branch_visited = visited.clone();
@@ -5367,14 +5385,28 @@ fn walk_decl(
                     if branch_ty.is_never() {
                         continue;
                     }
-                    merged = if options.assignments {
-                        merge_types(merged, branch_ty)
-                    } else {
-                        intersect_types(merged, branch_ty)
-                    };
+                    merged = Some(match merged {
+                        None => branch_ty,
+                        Some(previous) if options.assignments => {
+                            if model.type_of_decl(decl).is_some_and(|ty| ty.is_unknown())
+                                && model
+                                    .file_facts()
+                                    .and_then(|facts| facts.decl_by_id(decl))
+                                    .is_some_and(|decl| {
+                                        decl.doc_type_syntax.is_some()
+                                            || matches!(decl.kind, crate::DeclKind::Param)
+                                    })
+                            {
+                                merge_branch_types(previous, branch_ty)
+                            } else {
+                                merge_types(previous, branch_ty)
+                            }
+                        }
+                        Some(previous) => intersect_types(previous, branch_ty),
+                    });
                 }
             }
-            Some(merged)
+            Some(merged.unwrap_or(LuaType::Unknown))
         }
     }
 }
@@ -5468,7 +5500,7 @@ fn walk_member(
             {
                 return trace_member(model, member, access, tree, common, visited, path);
             }
-            let mut merged = LuaType::Unknown;
+            let mut merged = None;
             for branch in branches {
                 let mut branch_visited = visited.clone();
                 let mut branch_path = path.clone_path();
@@ -5481,10 +5513,21 @@ fn walk_member(
                     &mut branch_visited,
                     &mut branch_path,
                 ) {
-                    merged = merge_types(merged, branch_ty);
+                    merged = Some(match merged {
+                        None => branch_ty,
+                        Some(previous) => {
+                            if flow_member_value_type(model, member)
+                                .is_some_and(|ty| ty.is_unknown())
+                            {
+                                merge_branch_types(previous, branch_ty)
+                            } else {
+                                merge_types(previous, branch_ty)
+                            }
+                        }
+                    });
                 }
             }
-            Some(merged)
+            Some(merged.unwrap_or(LuaType::Unknown))
         }
     }
 }
@@ -5607,6 +5650,18 @@ fn merge_components(types: Vec<LuaType>) -> LuaType {
 }
 
 /// Union of two types (`Unknown` is the absorbing element; unions expand and deduplicate).
+fn merge_branch_types(left: LuaType, right: LuaType) -> LuaType {
+    if matches!(left, LuaType::Unknown) || matches!(right, LuaType::Unknown) {
+        return if matches!(left, LuaType::Any) || matches!(right, LuaType::Any) {
+            LuaType::Any
+        } else {
+            LuaType::Unknown
+        };
+    }
+    merge_types(left, right)
+}
+
+/// Combine inferred components; Unknown also represents an absent component here.
 fn merge_types(left: LuaType, right: LuaType) -> LuaType {
     if left == right {
         return left;

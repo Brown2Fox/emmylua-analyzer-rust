@@ -268,9 +268,10 @@ impl<'db> SemanticModel<'db> {
                 if !matches!(ty, LuaType::Unknown) {
                     return Some(self.attach_generic_constraints(ty, closure_syntax));
                 }
-                // `function a.aaa(x)`: when no call site can be inferred, fill in parameter types from the owner type's field signature.
-                if let Some(mut param_ty) =
-                    self.expected_member_param_for_closure(closure_syntax, param_index)
+                // Fall back to an explicit function-variable type or the owner type's field signature.
+                if let Some(mut param_ty) = self
+                    .expected_variable_param_for_closure(closure_syntax, param_index)
+                    .or_else(|| self.expected_member_param_for_closure(closure_syntax, param_index))
                 {
                     // `self` in field types must be concretized to the owner instance during function-body variable inference,
                     // but stays SelfInfer in signature types so call checks remain consistent with the original field signature.

@@ -579,6 +579,31 @@ impl<'db> SemanticModel<'db> {
         };
         Some(owner_ty)
     }
+    /// Parameter contract from a function-valued declaration's explicit @type.
+    pub(crate) fn expected_variable_param_for_closure(
+        &self,
+        closure_syntax: LuaSyntaxId,
+        param_index: usize,
+    ) -> Option<LuaType> {
+        let facts = self.file_facts()?;
+        let syntax = facts
+            .decls
+            .iter()
+            .find(|decl| decl.value_expr_syntax == Some(closure_syntax))?
+            .doc_type_syntax?;
+        let ty = self.doc_type_lua_rich(syntax);
+        let candidates = infer::vm::expand_callable_types_in_model(self, &ty);
+        let types: Vec<_> = candidates
+            .iter()
+            .filter_map(|fun| {
+                fun.get_params()
+                    .get(param_index)
+                    .and_then(|(_, ty)| ty.clone())
+            })
+            .collect();
+        (!types.is_empty()).then(|| LuaType::from_vec(types))
+    }
+
     /// If the closure is a member implementation like `function a.aaa(...)`, return the function signature of the same-named field on the owner type.
     /// Used to fill in parameter types from field declarations when `---@param` is absent.
     pub(crate) fn expected_member_param_for_closure(

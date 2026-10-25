@@ -77,6 +77,10 @@ pub enum DiagnosticCode {
     CircleDocClass,
     /// Incomplete signature doc
     IncompleteSignatureDoc,
+    /// Function parameter has no declared or inferred type
+    NoImplicitAny,
+    /// Unknown value used in a type-dependent operation
+    UnknownOperation,
     /// Missing global doc
     MissingGlobalDoc,
     /// Assign type mismatch
@@ -132,6 +136,9 @@ pub enum DiagnosticCode {
 // Update functions to match enum variants
 pub fn get_default_severity(code: DiagnosticCode) -> DiagnosticSeverity {
     match code {
+        DiagnosticCode::NoImplicitAny | DiagnosticCode::UnknownOperation => {
+            DiagnosticSeverity::ERROR
+        }
         DiagnosticCode::SyntaxError => DiagnosticSeverity::ERROR,
         DiagnosticCode::DocSyntaxError => DiagnosticSeverity::ERROR,
         DiagnosticCode::TypeNotFound => DiagnosticSeverity::WARNING,
@@ -163,6 +170,7 @@ pub fn is_code_default_enable(code: &DiagnosticCode, level: LuaLanguageLevel) ->
         DiagnosticCode::IterVariableReassign => level >= LuaLanguageLevel::Lua55,
         DiagnosticCode::CodeStyleCheck => false,
         DiagnosticCode::IncompleteSignatureDoc => false,
+        DiagnosticCode::NoImplicitAny | DiagnosticCode::UnknownOperation => false,
         DiagnosticCode::MissingGlobalDoc => false,
         DiagnosticCode::UnknownDocTag => false,
         // ... handle other variants

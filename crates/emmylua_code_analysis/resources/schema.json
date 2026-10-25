@@ -136,8 +136,10 @@
       "$ref": "#/$defs/EmmyrcStrict",
       "default": {
         "arrayIndex": true,
+        "checkUnknown": false,
         "docBaseConstMatchBaseType": true,
         "metaOverrideFileDefine": true,
+        "noImplicitAny": false,
         "requirePath": false,
         "typeCall": false
       }
@@ -336,6 +338,16 @@
           "description": "Incomplete signature doc",
           "type": "string",
           "const": "incomplete-signature-doc"
+        },
+        {
+          "description": "Function parameter has no declared or inferred type",
+          "type": "string",
+          "const": "no-implicit-any"
+        },
+        {
+          "description": "Unknown value used in a type-dependent operation",
+          "type": "string",
+          "const": "unknown-operation"
         },
         {
           "description": "Missing global doc",
@@ -1074,6 +1086,11 @@
           "type": "boolean",
           "default": true
         },
+        "checkUnknown": {
+          "description": "Require narrowing unknown values before type-dependent operations.",
+          "type": "boolean",
+          "default": false
+        },
         "docBaseConstMatchBaseType": {
           "description": "Base constant types defined in doc can match base types, allowing int to match `---@alias id 1|2|3`, same for string.",
           "type": "boolean",
@@ -1083,6 +1100,11 @@
           "description": "meta define overrides file define",
           "type": "boolean",
           "default": true
+        },
+        "noImplicitAny": {
+          "description": "Report function parameters whose type cannot be inferred or explicitly declared.",
+          "type": "boolean",
+          "default": false
         },
         "requirePath": {
           "description": "Whether to enable strict mode require path.",
