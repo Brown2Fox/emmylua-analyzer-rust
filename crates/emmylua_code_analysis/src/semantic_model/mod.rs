@@ -8,6 +8,7 @@ pub mod type_eval;
 
 mod access;
 mod doc_types;
+mod value_reference;
 mod prelude;
 mod signature;
 mod types;

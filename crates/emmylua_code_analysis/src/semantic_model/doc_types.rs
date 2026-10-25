@@ -35,6 +35,9 @@ impl<'db> SemanticModel<'db> {
                 ty = rich;
             }
         }
+        // LuaCATS literal aliases refer to runtime values, while bound generic
+        // backticks retain their string-to-type capture semantics.
+        ty = self.resolve_alias_value_references(def, &ty);
         // When the shell layer cannot lower generic `keyof T`, rich projection drops the mapped constraint to None,
         // making it impossible to expand after instantiation. Here we restore the generic keyof constraint on alias targets from the AST;
         // normal doc/completion paths do not go through this restoration, so `keyof T` constraints still display as Unknown there.
