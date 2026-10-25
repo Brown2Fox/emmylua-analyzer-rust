@@ -1,3 +1,4 @@
+mod gcc_output_writer;
 mod github_output_writer;
 mod json_output_writer;
 mod sarif_output_writer;
@@ -27,6 +28,7 @@ pub async fn output_result(
     severity_filter: Option<DiagnosticSeverityFilter>,
 ) -> i32 {
     let mut writer: Box<dyn OutputWriter> = match output_format {
+        OutputFormat::Gcc => Box::new(gcc_output_writer::GccOutputWriter),
         OutputFormat::Json => Box::new(json_output_writer::JsonOutputWriter::new(output)),
         OutputFormat::Text => {
             Box::new(text_output_writer::TextOutputWriter::new(workspace.clone()))

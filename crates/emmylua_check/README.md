@@ -80,6 +80,24 @@ Only output warnings and errors:
 emmylua_check . --severity warn
 ```
 
+#### Compact GCC-style Output
+
+Print one diagnostic per line, using absolute paths for terminal navigation:
+```shell
+emmylua_check . -f gcc
+```
+
+```text
+D:/project/main.lua:10:5: warning: expected `string`, found `number`
+```
+
+The format is `file:line:column: severity: message`. Errors use `error`, warnings
+use `warning`, and information and hints use `note`. Multiline messages are joined
+onto one line. There are no code excerpts, progress messages, or summary; a clean
+check produces no output. Operational failures are still reported on stderr.
+Use `--severity warn` to show only warnings and errors. Explicit `--verbose` and
+`--profile` options can still produce additional output.
+
 #### GitHub Actions Annotations
 
 Output diagnostics as [GitHub Actions workflow commands](https://docs.github.com/actions/reference/workflow-commands-for-github-actions#setting-an-error-message), so issues appear as inline annotations on the changed lines in pull requests:
@@ -156,7 +174,7 @@ Arguments:
 Options:
   -c, --config <CONFIG>                Path to configuration file. If not provided, ".emmyrc.json" and ".luarc.json" will be searched in the workspace directory
   -i, --ignore <IGNORE>                Comma-separated list of ignore patterns. Patterns must follow glob syntax
-  -f, --output-format <OUTPUT_FORMAT>  Specify output format [default: text] [possible values: json, text, sarif, github]
+  -f, --output-format <OUTPUT_FORMAT>  Specify output format [default: text] [possible values: json, text, sarif, gcc, github]
       --output <OUTPUT>                Specify output target (stdout or file path, only used when output_format is json) [default: stdout]
       --warnings-as-errors             Treat warnings as errors
       --severity <SEVERITY>            Only output diagnostics at this severity or above [possible values: error, warn, info, hint]

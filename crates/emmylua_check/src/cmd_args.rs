@@ -64,6 +64,8 @@ pub enum OutputFormat {
     Json,
     Text,
     Sarif,
+    /// One diagnostic per line: file:line:column: severity: message
+    Gcc,
     /// GitHub Actions workflow commands (`::error` / `::warning` / `::notice`)
     Github,
 }

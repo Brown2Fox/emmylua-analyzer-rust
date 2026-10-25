@@ -11,6 +11,21 @@ use tokio_util::sync::CancellationToken;
 use crate::init::setup_logger;
 use emmylua_code_analysis::{CheckConfig, CheckProfile};
 
+/// Diagnostics caused a nonzero exit status; this is not an operational failure.
+pub struct CheckFailed(pub i32);
+
+impl std::fmt::Display for CheckFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "exit code: {}", self.0)
+    }
+}
+impl std::fmt::Debug for CheckFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.to_string(), f)
+    }
+}
+impl Error for CheckFailed {}
+
 pub async fn run_check(cmd_args: CmdArgs) -> Result<(), Box<dyn Error + Sync + Send>> {
     setup_logger(cmd_args.verbose);
 
@@ -87,6 +102,7 @@ pub async fn run_check(cmd_args: CmdArgs) -> Result<(), Box<dyn Error + Sync + S
     drop(sender);
     let db = &analysis.db;
 
+    let compact = cmd_args.output_format == OutputFormat::Gcc;
     let exit_code = output_result(
         total_count,
         db,
@@ -104,10 +120,12 @@ pub async fn run_check(cmd_args: CmdArgs) -> Result<(), Box<dyn Error + Sync + S
     }
 
     if exit_code != 0 {
-        return Err(format!("exit code: {}", exit_code).into());
+        return Err(Box::new(CheckFailed(exit_code)));
     }
 
-    eprintln!("Check finished");
+    if !compact {
+        eprintln!("Check finished");
+    }
     Ok(())
 }
 
