@@ -802,6 +802,20 @@ impl<'a> InferVm<'a> {
     }
 
     fn index_member_dynamic(&mut self, owner: Value, key: Value) -> Value {
+        let expanded = expand_alias_generic(self.model, &owner.ty);
+        let table_params = match &expanded {
+            LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
+                Some(generic.get_params().as_slice())
+            }
+            LuaType::TableGeneric(params) => Some(params.as_slice()),
+            _ => None,
+        };
+        if let Some(params) = table_params
+            && let [key_type, value_type] = params
+            && self.model.type_check_subtype(&key.ty, key_type)
+        {
+            return Value::plain(value_type.clone());
+        }
         match &key.ty {
             LuaType::StringConst(s) | LuaType::DocStringConst(s) => {
                 self.index_member(owner, &LuaMemberKey::Name(SmolStr::new(s.as_str())))
@@ -1079,6 +1093,17 @@ impl<'a> InferVm<'a> {
             let name_owner = SemanticId::Name(decl.name.clone().into());
             if !owners.contains(&name_owner) {
                 owners.push(name_owner);
+            }
+        }
+        if let Some(SemanticId::Member(member_key)) = &owner.owner
+            && let Some(facts) = self.model.file_facts_of(member_key.file_id)
+            && let Some(member) = facts.member_by_id(&SemanticId::Member(member_key.clone()))
+            && let SemanticId::Name(parent) = &member.owner
+            && let LuaMemberKey::Name(name) = &member.key
+        {
+            let qualified = SemanticId::name(format!("{parent}.{name}").into());
+            if !owners.contains(&qualified) {
+                owners.push(qualified);
             }
         }
         // `local x = {}` associated with `---@class MyClass`: also add the class def as a
@@ -2686,6 +2711,11 @@ impl<'a> InferVm<'a> {
             );
         }
         let generic_tpls = self.generic_tpls_with_metadata(file_id, generic_params);
+        for (_, ty) in &mut params {
+            if let Some(value) = ty {
+                *value = bind_signature_generics(value, &generic_tpls);
+            }
+        }
         ret = bind_signature_generics(&ret, &generic_tpls);
         let async_state = if docs.is_async {
             AsyncState::Async
@@ -4031,8 +4061,7 @@ pub(crate) fn unify_call_bindings(
             } else {
                 let pv = param_union.into_vec();
                 // A generic union like `` `T`|T `` allows T to be bound through any generic
-                // component; ordinary unions still require all non-nil components to be
-                // compatible (caller may pass any member).
+                // component; ordinary unions accept any compatible alternative.
                 if matches!(arg, Function | DocFunction(_) | Signature(_)) {
                     pv.iter()
                         .any(|p| unify_call_bindings(model, p, arg, bindings))
@@ -4048,12 +4077,16 @@ pub(crate) fn unify_call_bindings(
                 } else if pv.iter().any(|p| matches!(p, TplRef(_))) {
                     pv.iter()
                         .any(|p| unify_call_bindings(model, p, arg, bindings))
-                } else if pv.contains(&Nil) {
-                    pv.iter()
-                        .filter(|t| !matches!(t, Nil))
-                        .all(|p| unify_call_bindings(model, p, arg, bindings))
                 } else {
-                    false
+                    pv.iter().any(|p| {
+                        let mut candidate_bindings = bindings.clone();
+                        if unify_call_bindings(model, p, arg, &mut candidate_bindings) {
+                            *bindings = candidate_bindings;
+                            true
+                        } else {
+                            false
+                        }
+                    })
                 }
             }
         }
@@ -4090,6 +4123,7 @@ pub(crate) fn unify_call_bindings(
             bindings.insert(str_tpl.get_tpl_id(), Ref(type_id));
             true
         }
+        Ref(_) | Def(_) => model.type_check_subtype(arg, param),
         _ => {
             if matches!(arg, Unknown | Any)
                 || (param == arg || primitive_accepts_const(param, arg))

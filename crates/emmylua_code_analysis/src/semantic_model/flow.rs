@@ -1796,14 +1796,17 @@ fn trace_decl(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
-    // On a loop-free graph every route to a flow node crosses the same guards, so
-    // a state's value depends on the node and the options alone — never on the
-    // route. That makes the state cacheable, which matters because a nested
-    // conditional chain otherwise re-derives the same states along exponentially
-    // many routes. Only nodes that can reach a loop backwards keep the uncached
-    // path (see the type note on `cache::TraceStateKey`), so a loop in one function
-    // does not disable memoization for the rest of the file.
-    if tree.is_loop_reachable(flow_id) {
+    // Scalar guard chains share trace states to avoid exponential backtracking.
+    // Member predicates depend on the incoming path and must not reuse a state
+    // computed for another field guard. Loops also keep their uncached path.
+    if tree.is_loop_reachable(flow_id)
+        || path.narrowings.iter().any(|n| {
+            matches!(
+                n,
+                Narrowing::MemberTruthy { .. } | Narrowing::MemberDiscriminant { .. }
+            )
+        })
+    {
         return trace_decl_uncached(model, decl, tree, flow_id, options, mode, visited, path);
     }
     let key = cache::TraceStateKey {
@@ -5084,11 +5087,16 @@ fn filter_type_by_member_discriminant(
                 continue;
             }
         }
-        let matched = model
-            .member_type(&component, key)
-            .map(|member_ty| types_may_overlap(member_ty, literal.clone()))
-            .unwrap_or(false);
-        if matched == keep_matching {
+        let member_ty = model.member_type(&component, key).unwrap_or(LuaType::Nil);
+        let member_ty =
+            super::type_eval::expand_alias_branches(model, &member_ty).unwrap_or(member_ty);
+        let possible = if keep_matching {
+            model.type_check_subtype(literal, &member_ty)
+                || types_may_overlap(member_ty, literal.clone())
+        } else {
+            !is_singleton_value_type(&member_ty) || !types_may_overlap(member_ty, literal.clone())
+        };
+        if possible {
             kept.push(component);
         }
     }
@@ -5127,8 +5135,28 @@ fn filter_type_by_member_truthiness(
         }
         // Missing member is equivalent to nil: `obj.missing` is false.
         let member_ty = model.member_type(&component, key).unwrap_or(LuaType::Nil);
-        let truthy = type_is_truthy(&member_ty);
-        if truthy == keep_matching {
+        let member_ty = if matches!(component, LuaType::TableConst(_)) {
+            match member_ty {
+                LuaType::BooleanConst(_) | LuaType::DocBooleanConst(_) => LuaType::Boolean,
+                other => widen_const_type(other),
+            }
+        } else {
+            member_ty
+        };
+        let possible = if keep_matching {
+            type_is_truthy(&member_ty)
+        } else {
+            member_ty.is_nullable()
+                || matches!(
+                    member_ty,
+                    LuaType::Boolean
+                        | LuaType::BooleanConst(false)
+                        | LuaType::DocBooleanConst(false)
+                        | LuaType::Any
+                        | LuaType::Unknown
+                )
+        };
+        if possible {
             kept.push(component);
         }
     }

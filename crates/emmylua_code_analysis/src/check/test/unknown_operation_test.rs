@@ -379,3 +379,196 @@ fn library_unknown_results_are_checked_in_project_code() {
         1
     );
 }
+
+#[test]
+fn known_values_survive_loop_and_field_guards() {
+    for source in [
+        "for i = 1, 4 do local x = i + 1 end",
+        "---@class StrictParams\n---@field min number?\n---@param p StrictParams\nlocal function f(p) if p.min ~= nil then return p.min + 1 end end",
+        "---@param x number\n---@return number\nlocal function clamp(x) return x end\nlocal t = clamp(1)\nt = t * t * (3 - 2 * t)",
+    ] {
+        assert_eq!(strict_count(source), 0, "{source}");
+    }
+}
+
+#[test]
+fn optional_fields_and_alias_discriminants_preserve_the_owner() {
+    assert_eq!(
+        strict_count(
+            r#"
+---@alias ControlKind 'slider'|'scheme'
+---@class Control
+---@field kind ControlKind
+---@field format string?
+---@field min number?
+---@field max number?
+---@field defaultValue number
+---@param value number?
+---@param def Control
+local function clamp(value, def)
+    if value and def.min ~= nil then value = def.min end
+    if value and def.max ~= nil then value = def.max end
+    return value or def.defaultValue
+end
+---@param def Control
+---@param highlight boolean
+local function draw(def, highlight)
+    if def.kind ~= 'slider' then return end
+    if def.format == nil then return end
+    local need = highlight and 1 ~= def.defaultValue
+    if need then local ignored = 1 end
+    return def.format .. def.defaultValue
+end
+"#
+        ),
+        0
+    );
+}
+
+#[test]
+fn typed_tables_support_dynamic_numeric_and_string_keys() {
+    assert_eq!(
+        strict_count(
+            r#"
+---@class Cell
+---@field value number
+---@type table<integer, Cell>
+local cells = {}
+---@type table<string, Cell>
+local names = {}
+---@param key string
+local function read(key)
+    for i = 1, 4 do
+        local value = cells[i]
+        local result = value.value + names[key].value
+    end
+end
+"#
+        ),
+        0
+    );
+}
+
+#[test]
+fn mutable_boolean_field_does_not_exclude_its_table() {
+    assert_eq!(
+        strict_count(
+            r#"
+local state = { active = false, value = 0 }
+---@param active boolean
+function setActive(active) state.active = active end
+function first() if not state.active then return end return state.value + 1 end
+function second() if state.active then return state.value + 1 end end
+"#
+        ),
+        0
+    );
+}
+
+#[test]
+fn library_static_methods_and_generic_union_arguments_keep_returns() {
+    use crate::{
+        SemanticDatabase, SemanticModel, WorkspaceFolder,
+        check::{CheckConfig, check_file},
+    };
+    use std::{str::FromStr, sync::Arc};
+    let mut config = Emmyrc::default();
+    config.strict.check_unknown = true;
+    let config = Arc::new(config);
+    let mut db = SemanticDatabase::new();
+    db.update_config(config.clone());
+    db.add_main_workspace("C:/ws".into());
+    db.add_library_workspace(&WorkspaceFolder::new("C:/sdk".into(), true));
+    db.set_file_content(
+        &lsp_types::Uri::from_str("file:///C:/sdk/api.lua").unwrap(),
+        Some(
+            r#"
+---@meta
+sdk = {}
+---@return SdkConfig
+function sdk.Config() end
+---@class SdkConfig
+---@field value number
+local config = nil
+---@return SdkConfig
+function sdk.Config.current() end
+---@generic T
+---@param x T
+---@param low T|number
+---@param high T|number
+---@return T
+function sdk.clamp(x, low, high) end
+---@alias SdkMode 1|2
+---@param mode SdkMode?
+---@return SdkConfig
+function sdk.create(mode) end
+"#
+            .to_string(),
+        ),
+    );
+    let main = db.set_file_content(
+        &lsp_types::Uri::from_str("file:///C:/ws/main.lua").unwrap(),
+        Some(
+            r#"
+local cfg = sdk.Config.current()
+local value = sdk.clamp(0.5, 0, 1)
+---@type SdkConfig?
+local created = nil
+created = sdk.create(1)
+return cfg.value + value + created.value
+"#
+            .to_string(),
+        ),
+    );
+    let diagnostics = check_file(
+        &SemanticModel::new(&db, main),
+        Arc::new(CheckConfig::new(&config)),
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::UnknownOperation),
+        0
+    );
+    assert_eq!(count_by_code(&diagnostics, DiagnosticCode::NeedCheckNil), 0);
+}
+
+#[test]
+fn documented_boolean_member_accepts_new_boolean_values() {
+    let diagnostics = check_source(
+        r#"
+---@class Toggle
+---@field enabled boolean
+local M = {}
+M.enabled = false ---@type boolean
+---@param value boolean
+function M.set(value) M.enabled = value end
+"#,
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::AssignTypeMismatch),
+        0
+    );
+}
+
+#[test]
+fn pairs_uses_guarded_optional_table_type() {
+    assert_eq!(
+        strict_count(
+            r#"
+---@generic K, V
+---@param t table<K, V>
+---@return fun(): K, V
+function pairs(t) end
+---@class Choices
+---@field options table<integer, string>?
+---@param def Choices
+local function render(def)
+    if def.options == nil then return end
+    for key, label in pairs(def.options) do
+        local text = label .. key
+    end
+end
+"#
+        ),
+        0
+    );
+}

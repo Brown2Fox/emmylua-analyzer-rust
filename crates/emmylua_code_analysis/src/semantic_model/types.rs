@@ -439,6 +439,19 @@ impl<'db> SemanticModel<'db> {
         let owner = decl.owner_syntax?;
         let tree = self.syntax_tree()?;
         let node = owner.to_node_from_root(&tree.get_red_root())?;
+        if let Some(stat) = emmylua_parser::LuaForStat::cast(node.clone()) {
+            let integer_bounds = stat.get_iter_expr().all(|expr| {
+                matches!(
+                    self.type_of_expr(expr.get_syntax_id()),
+                    LuaType::Integer | LuaType::IntegerConst(_) | LuaType::DocIntegerConst(_)
+                )
+            });
+            return Some(if integer_bounds {
+                LuaType::Integer
+            } else {
+                LuaType::Number
+            });
+        }
         let stat = LuaForRangeStat::cast(node)?;
         let vars = stat.get_var_name_list().collect::<Vec<_>>();
         let index = vars
@@ -453,7 +466,7 @@ impl<'db> SemanticModel<'db> {
             && matches!(name.as_str(), "pairs" | "ipairs" | "next")
         {
             let arg = call.get_args_list()?.get_args().next()?;
-            let arg_ty = self.type_of_expr(arg.get_syntax_id());
+            let arg_ty = self.type_of_expr_at(arg.get_syntax_id(), arg.get_position());
             let member = if name.as_str() == "ipairs" {
                 "__ipairs"
             } else {
@@ -1371,6 +1384,13 @@ impl<'db> SemanticModel<'db> {
     }
     /// Member assignment contract, keeping explicit field annotations exact.
     pub(crate) fn member_assignment_type(&self, member: &SemanticId, target: LuaType) -> LuaType {
+        if let SemanticId::Member(key) = member
+            && let Some(facts) = self.file_facts_of(key.file_id)
+            && let Some(def) = facts.member_by_id(member)
+            && let Some(syntax) = def.doc_type_syntax
+        {
+            return self.doc_type_lua_rich_in(key.file_id, syntax);
+        }
         let inferred = match member {
             SemanticId::Member(key) => self.file_facts_of(key.file_id),
             _ => None,
