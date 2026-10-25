@@ -17,6 +17,12 @@ Define classes or interfaces, supporting inheritance, field definitions, and acc
 ---@class <generic_class_name><T1, T2, ...>[: <parent_class>...]
 ```
 
+An exact class accepts only fields declared with `@field`, inherited fields, and
+keys covered by declared index signatures. Undeclared fields report `inject-field`
+even on the class table itself, including assignments of `nil`, method definitions,
+and fields in its initial table literal. Ordinary classes can still acquire fields
+from their implementation.
+
 ## Examples
 
 ```lua

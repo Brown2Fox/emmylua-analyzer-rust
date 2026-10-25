@@ -2606,6 +2606,7 @@ fn type_def_flags(flag: Option<LuaDocTypeFlag>, is_meta: bool) -> TypeDefFlags {
     };
     for token in flag.get_attrib_tokens() {
         match token.get_name_text() {
+            "exact" => flags.exact = true,
             "partial" => flags.partial = true,
             "constructor" => flags.constructor = true,
             _ => {}

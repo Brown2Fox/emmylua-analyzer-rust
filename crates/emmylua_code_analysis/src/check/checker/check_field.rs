@@ -3,8 +3,8 @@ use std::rc::Rc;
 use std::collections::{HashMap, HashSet};
 
 use emmylua_parser::{
-    LuaAssignStat, LuaAst, LuaAstNode, LuaCallExpr, LuaDocType, LuaExpr, LuaIndexKey, LuaLocalStat,
-    LuaTableExpr, LuaVarExpr,
+    LuaAssignStat, LuaAst, LuaAstNode, LuaCallExpr, LuaDocType, LuaExpr, LuaIndexExpr, LuaIndexKey,
+    LuaLocalStat, LuaTableExpr, LuaVarExpr,
 };
 
 use crate::DiagnosticCode;
@@ -36,6 +36,11 @@ impl Checker for CheckFieldChecker {
                 LuaAst::LuaAssignStat(assign_stat) => {
                     check_assign(context, semantic_model, &assign_stat);
                     check_index_assign(context, semantic_model, &assign_stat);
+                }
+                LuaAst::LuaFuncStat(func_stat) => {
+                    if let Some(LuaVarExpr::IndexExpr(index)) = func_stat.get_func_name() {
+                        check_exact_index(context, semantic_model, &index);
+                    }
                 }
                 LuaAst::LuaCallExpr(call_expr) => {
                     check_call_args(context, semantic_model, &call_expr)
@@ -98,6 +103,9 @@ fn check_index_assign(
         let LuaVarExpr::IndexExpr(index_expr) = var else {
             continue;
         };
+        if check_exact_index(context, semantic_model, &index_expr) {
+            continue;
+        }
         let Some(prefix) = index_expr.get_prefix_expr() else {
             continue;
         };
@@ -165,6 +173,65 @@ fn check_index_assign(
             ),
         );
     }
+}
+
+/// Exact classes accept only documented fields, inherited fields and index signatures.
+/// Runtime writes must not make their own field names valid declarations.
+fn check_exact_index(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    index: &LuaIndexExpr,
+) -> bool {
+    let Some(prefix) = index.get_prefix_expr() else {
+        return false;
+    };
+    let ty = semantic_model.type_of_expr(prefix.get_syntax_id());
+    let ty = expand_alias_type(semantic_model, &ty).unwrap_or(ty);
+    let Some(id) = resolve_target(semantic_model, &ty) else {
+        return false;
+    };
+    let Some(def) = find_type_def(semantic_model, &id).filter(|def| def.flags.exact) else {
+        return false;
+    };
+    if let Some(key) = index.get_index_key() {
+        check_exact_key(context, semantic_model, &def, &key, index.get_range());
+    }
+    true
+}
+
+fn check_exact_key(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    def: &TypeDef,
+    key: &LuaIndexKey,
+    fallback_range: rowan::TextRange,
+) {
+    let mut fields = HashMap::new();
+    let mut signatures = Vec::new();
+    collect_fields(
+        semantic_model,
+        &def.id,
+        &mut Vec::new(),
+        &mut fields,
+        &mut signatures,
+    );
+    collect_object_super_fields(semantic_model, def, &mut fields);
+    if static_member_key(semantic_model, key).is_some_and(|key| fields.contains_key(&key))
+        || signatures
+            .iter()
+            .any(|signature| signature_matches_key(semantic_model, signature, key))
+    {
+        return;
+    }
+    context.add_diagnostic(
+        DiagnosticCode::InjectField,
+        key.get_range().unwrap_or(fallback_range),
+        t!(
+            "Fields cannot be injected into the reference of `%{class}` for `%{field}`. ",
+            class = def.full_name.as_str(),
+            field = key.get_path_part()
+        ),
+    );
 }
 
 /// Follows alias definitions until a non-alias type is reached. Returns `None` when the
@@ -343,6 +410,15 @@ fn check_against(
         return;
     };
     let Some(type_syntax) = decl.doc_type_syntax else {
+        if let Some(def) = decl
+            .owner_syntax
+            .and_then(|owner| facts.type_def_by_owner_syntax(owner))
+            .filter(|def| def.flags.exact)
+        {
+            for (field, key) in table.get_fields_with_keys() {
+                check_exact_key(context, semantic_model, def, &key, field.get_range());
+            }
+        }
         return;
     };
     let target = semantic_model.doc_type_lua(type_syntax);

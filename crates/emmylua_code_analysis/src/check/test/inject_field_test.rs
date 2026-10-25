@@ -648,3 +648,152 @@ mod dictionary_constructor {
         }
     }
 }
+
+#[cfg(test)]
+mod exact_class_tests {
+    use crate::{DiagnosticCode, check::test::check_source};
+
+    fn injection_count(source: &str) -> usize {
+        check_source(source)
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::InjectField)
+            .count()
+    }
+
+    #[test]
+    fn exact_class_rejects_new_members() {
+        for assignment in [
+            "M.extra = nil",
+            "M['extra'] = 1",
+            "function M.extra() end",
+            "function M:extra() end",
+        ] {
+            assert_eq!(
+                injection_count(&format!(
+                    "---@class (exact) ExactModule\nlocal M = {{}}\n{assignment}"
+                )),
+                1,
+                "{assignment}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_class_checks_initializer() {
+        assert_eq!(
+            injection_count("---@class (exact) ExactModule\nlocal M = {extra = 1}"),
+            1
+        );
+    }
+
+    #[test]
+    fn exact_class_allows_declared_and_inherited_fields() {
+        assert_eq!(
+            injection_count(
+                r#"
+---@class Parent
+---@field inherited? number
+
+---@class (exact) ExactModule: Parent
+---@field own? number
+---@field run? fun()
+local M = {own = 1}
+M.own = 2
+M.inherited = 3
+function M.run() end
+M.extra = nil
+"#
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn exact_class_checks_reference_and_alias() {
+        assert_eq!(
+            injection_count(
+                r#"
+---@class Parent
+---@field inherited? number
+
+---@class (exact) ExactModule: Parent
+---@alias ModuleAlias ExactModule
+---@type ModuleAlias
+local M = {}
+M.extra = nil
+local alias = M
+alias.another = 1
+"#
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn exact_class_respects_index_signatures() {
+        assert_eq!(
+            injection_count(
+                r#"
+---@class (exact) ExactMap
+---@field [string] number
+local M = {}
+M.extra = 1
+M[1] = 2
+"#
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn ordinary_class_still_allows_definition_members() {
+        assert_eq!(
+            injection_count(
+                r#"
+---@class OpenModule
+local M = {initial = 1}
+M.extra = nil
+function M.run() end
+"#
+            ),
+            0
+        );
+    }
+    #[test]
+    fn exact_class_checks_dynamic_keys_and_generic_instances() {
+        assert_eq!(
+            injection_count(
+                r#"
+---@class (exact) ExactBox<T>
+---@field value? T
+---@type ExactBox<number>
+local box = {}
+box.value = 1
+box.extra = nil
+---@param key string
+local function add(key)
+    box[key] = 1
+end
+"#
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn exact_class_from_library_rejects_new_fields() {
+        let mut ws = crate::VirtualWorkspace::new();
+        ws.def_file(
+            "types.lua",
+            "---@class (exact) LibraryClass\n---@field value? number",
+        );
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::InjectField,
+            "---@type LibraryClass\nlocal value = {}\nvalue.extra = nil"
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::InjectField,
+            "---@type LibraryClass\nlocal value = {}\nvalue.value = 1"
+        ));
+    }
+}

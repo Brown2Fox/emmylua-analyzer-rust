@@ -30,9 +30,11 @@ pub enum TypeDefKind {
     Enum,
 }
 
-/// Type definition flags (mirroring old `LuaTypeFlag::{Partial, Constructor, Meta}`).
+/// Type definition flags (mirroring old `LuaTypeFlag::{Exact, Partial, Constructor, Meta}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct TypeDefFlags {
+    /// `---@class (exact) Foo` forbids undeclared fields.
+    pub exact: bool,
     /// `---@class Foo(partial)`.
     pub partial: bool,
     /// `---@class Foo(constructor)`.
@@ -68,7 +70,7 @@ pub struct TypeDef {
     pub owner_syntax: Option<LuaSyntaxId>,
     /// `---@deprecated` (same comment block as `@class`/`@alias`/`@enum`).
     pub deprecated: bool,
-    /// Flags (partial / constructor / meta).
+    /// Flags (exact / partial / constructor / meta).
     pub flags: TypeDefFlags,
 }
 
