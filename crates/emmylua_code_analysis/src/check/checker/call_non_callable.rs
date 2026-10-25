@@ -57,7 +57,15 @@ fn check_call(
             .unwrap_or_else(|| semantic_model.type_of_expr(prefix_expr.get_syntax_id())),
         _ => semantic_model.type_of_expr(prefix_expr.get_syntax_id()),
     };
-    if is_callable(semantic_model, &callee_ty) {
+    // Library tables may also have function declarations. Use the same resolved
+    // signatures as argument checking and return inference for that table.
+    if is_callable(semantic_model, &callee_ty)
+        || (matches!(callee_ty, LuaType::TableConst(_) | LuaType::Table)
+            && !semantic_model
+                .call_site_analysis(call_expr)
+                .candidates
+                .is_empty())
+    {
         return;
     }
     context.add_diagnostic(

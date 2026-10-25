@@ -407,14 +407,14 @@ fn check_member_assign(
         member_id,
         semantic_model.type_of_member_at(member_id, target_offset),
     );
-    // `t.x = value`: resolve_member first returns the synthesized member for this assignment; prefer the same-named member on the prefix's declared type.
+    // Runtime members can resolve to an earlier assignment. Prefer the declared
+    // owner contract for every write, not just the first assignment.
     if let Some(facts) = semantic_model.file_facts()
         && let Some(member) = facts.member_by_id(member_id)
     {
-        if member.value_syntax == Some(value_expr.get_syntax_id()) {
-            let SemanticId::Decl(owner) = &member.owner else {
-                return check_value_against_target(context, semantic_model, &target, value_expr);
-            };
+        if member.doc_type_syntax.is_none()
+            && let SemanticId::Decl(owner) = &member.owner
+        {
             let prefix_ty = semantic_model
                 .type_of_decl_assign_target_at(&SemanticId::Decl(owner.clone()), target_offset);
             let key = member.key.clone();

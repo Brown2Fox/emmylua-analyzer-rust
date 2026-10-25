@@ -1,6 +1,7 @@
 //! Diagnostic tests for check (mirrors the old `diagnostic/test` via the new SemanticDatabase → check_file path).
 
 mod access_invisible_test;
+mod camera_regression_test;
 mod analyze_error_test;
 mod assign_type_mismatch_test;
 mod attribute_check_test;

@@ -519,7 +519,7 @@ impl<'db> SemanticModel<'db> {
         let Some(prefix) = index_expr.get_prefix_expr() else {
             return false;
         };
-        let prefix_ty = self.prefix_type_for_member_resolution(&prefix);
+        let prefix_ty = self.type_of_expr_at(prefix.get_syntax_id(), index_expr.get_position());
         let LuaType::Union(union) = &prefix_ty else {
             return false;
         };

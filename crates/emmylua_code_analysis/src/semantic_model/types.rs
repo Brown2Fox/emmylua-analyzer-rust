@@ -831,11 +831,43 @@ impl<'db> SemanticModel<'db> {
         cache.member_type.insert(key, entry);
         result
     }
+    /// Class annotations attached to namespace assignments have the same meaning
+    /// as annotations attached to local declarations, including nil SDK stubs.
+    pub(crate) fn member_class_type(&self, member: &SemanticId) -> Option<LuaType> {
+        let SemanticId::Member(key) = member else {
+            return None;
+        };
+        let facts = self.file_facts_of(key.file_id)?;
+        let member = facts.member_by_id(member)?;
+        let value = member.value_syntax?;
+        let tree = self.syntax_tree_of(key.file_id)?;
+        let node = value.to_node_from_root(&tree.get_red_root())?;
+        let assignment = node.parent().and_then(LuaAssignStat::cast)?;
+        let def = facts.type_def_by_owner_syntax(assignment.get_syntax_id())?;
+        (def.kind == TypeDefKind::Class).then(|| self.type_def_ref(def))
+    }
+
     pub(crate) fn type_of_member_impl(&self, member: &SemanticId) -> Option<LuaType> {
         let member_file = self.file_id();
+        if let Some(ty) = self.member_class_type(member) {
+            return Some(ty);
+        }
         // Literal integers in `---@enum` table fields stay constant (`severity.ERROR` -> IntegerConst(1)).
         if let Some(enum_const) = self.enum_member_const(member_file, member) {
             return Some(enum_const);
+        }
+        // A nil initializer in an API stub must not erase its explicit type.
+        // Keep nullable annotations nullable; unannotated nil stays nil.
+        if let Some(facts) = self.file_facts_of(member_file)
+            && let Some(def) = facts.member_by_id(member)
+            && let Some(doc) = def.doc_type_syntax
+            && let Some(value) = def.value_syntax
+            && let Some(tree) = self.syntax_tree_of(member_file)
+            && let Some(node) = value.to_node_from_root(&tree.get_red_root())
+            && let Some(literal) = LuaLiteralExpr::cast(node)
+            && matches!(literal.get_literal(), Some(LuaLiteralToken::Nil(_)))
+        {
+            return Some(self.doc_type_lua_in(member_file, doc, &[]));
         }
         // Runtime member assignments prefer VM projection: the TypeShell path does not perform higher-order generic call inference,
         // and would keep `E.foo_wrapped = wrap(function(a) ... end)` as `fun(...: T...)`.

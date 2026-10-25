@@ -1721,6 +1721,18 @@ struct DeclAssignmentFrame {
     base_before: LuaType,
 }
 
+// Unknown results must not recover an old nil value or an unknown/any contract
+// containing nil: the assignment replaced that value.
+fn known_assignment_fallback(ty: &LuaType) -> bool {
+    match ty {
+        LuaType::Unknown | LuaType::Any | LuaType::Nil => false,
+        LuaType::Union(union) => !union
+            .iter()
+            .any(|part| matches!(part, LuaType::Unknown | LuaType::Any)),
+        _ => true,
+    }
+}
+
 /// After backtracking reaches the start, expand the assignment frames on the explicit stack in earliest-to-latest order.
 fn finish_decl_frames(
     model: &SemanticModel,
@@ -1749,9 +1761,7 @@ fn finish_decl_frames(
             &narrowed_before,
             &frame.base_before,
         );
-        let value_ty = if value_ty.is_unknown()
-            && !matches!(narrowed_before, LuaType::Unknown | LuaType::Any)
-        {
+        let value_ty = if value_ty.is_unknown() && known_assignment_fallback(&narrowed_before) {
             widen_const_type(narrowed_before.clone())
         } else {
             value_ty
@@ -1928,7 +1938,7 @@ fn trace_decl_uncached(
                                 &base_before,
                             );
                             let value_ty = if value_ty.is_unknown()
-                                && !matches!(narrowed_before, LuaType::Unknown | LuaType::Any)
+                                && known_assignment_fallback(&narrowed_before)
                             {
                                 widen_const_type(narrowed_before.clone())
                             } else {
@@ -2107,8 +2117,11 @@ fn member_annotation_type(model: &SemanticModel, member: &SemanticId) -> Option<
     };
     let facts = model.file_facts_of(member_file)?;
     let member_def = facts.member_by_id(member)?;
-    let syntax = member_def.doc_type_syntax?;
-    Some(model.doc_type_lua_in(member_file, syntax, &[]))
+    if let Some(syntax) = member_def.doc_type_syntax {
+        Some(model.doc_type_lua_in(member_file, syntax, &[]))
+    } else {
+        model.member_class_type(member)
+    }
 }
 
 /// Backtrack along the CFG for the member's most recent assignment type.
