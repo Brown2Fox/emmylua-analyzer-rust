@@ -474,6 +474,9 @@ impl Hash for LuaUnionMembers {
 
 impl LuaUnionType {
     pub fn from_set(mut set: HashSet<LuaType>) -> Self {
+        if set.contains(&LuaType::Boolean) {
+            set.retain(|ty| !matches!(ty, LuaType::BooleanConst(_) | LuaType::DocBooleanConst(_)));
+        }
         let mut all_basic = true;
         let mut basic_type = BasicTypeUnion::new();
         for ty in &set {
@@ -500,7 +503,8 @@ impl LuaUnionType {
         }
     }
 
-    pub fn from_vec(types: Vec<LuaType>) -> Self {
+    pub fn from_vec(mut types: Vec<LuaType>) -> Self {
+        normalize_boolean_union(&mut types);
         let mut all_basic = true;
         let mut basic_type = BasicTypeUnion::new();
         for ty in &types {
@@ -1358,5 +1362,13 @@ mod tests {
                 expected
             );
         }
+    }
+}
+
+/// Boolean literals add no alternatives when the full boolean domain is present.
+pub(super) fn normalize_boolean_union(types: &mut Vec<LuaType>) {
+    let has_boolean = types.iter().any(|ty| matches!(ty, LuaType::Boolean));
+    if has_boolean {
+        types.retain(|ty| !matches!(ty, LuaType::BooleanConst(_) | LuaType::DocBooleanConst(_)));
     }
 }

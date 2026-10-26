@@ -331,6 +331,7 @@ impl LuaType {
                     }
                 }
 
+                super::complex::normalize_boolean_union(&mut result_types);
                 match result_types.len() {
                     0 => LuaType::Nil,
                     1 => result_types[0].clone(),

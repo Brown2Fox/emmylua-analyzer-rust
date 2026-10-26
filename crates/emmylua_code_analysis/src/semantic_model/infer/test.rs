@@ -1874,3 +1874,51 @@ fn expression_casts_use_the_current_file() {
         }
     }
 }
+
+#[test]
+fn boolean_union_absorbs_redundant_literals() {
+    use crate::{LuaType, LuaUnionType};
+    let types = vec![
+        LuaType::BooleanConst(true),
+        LuaType::DocBooleanConst(false),
+        LuaType::Boolean,
+    ];
+    assert_eq!(LuaType::from_vec(types.clone()), LuaType::Boolean);
+    for union in [
+        LuaUnionType::from_vec(types.clone()),
+        LuaUnionType::from_set(types.into_iter().collect()),
+    ] {
+        assert_eq!(union.into_vec(), vec![LuaType::Boolean]);
+    }
+    assert_eq!(
+        LuaType::from_vec(vec![LuaType::BooleanConst(false)]),
+        LuaType::BooleanConst(false)
+    );
+}
+
+#[test]
+fn camera_transition_condition_has_boolean_type() {
+    let fixture = model_of(
+        r#"
+---@type integer?
+local vehicleId
+---@type string?
+local cameraName
+---@type integer?
+local lastVehicleId
+---@type string?
+local lastCameraName
+local cameraOrVehicleChanged = (vehicleId ~= nil and vehicleId >= 0
+    and cameraName ~= nil
+    and (lastCameraName ~= cameraName or lastVehicleId ~= vehicleId))
+"#,
+    );
+    let model = fixture.model();
+    let ty = model
+        .type_of_decl(&decl_of(&model, "cameraOrVehicleChanged"))
+        .unwrap();
+    assert_eq!(
+        crate::semantic_model::render::humanize_type(&model, &ty),
+        "boolean"
+    );
+}
