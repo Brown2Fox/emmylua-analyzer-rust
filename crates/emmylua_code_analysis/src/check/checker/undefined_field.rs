@@ -117,6 +117,14 @@ fn is_invalid_prefix_type(ty: &LuaType) -> bool {
 /// Follows alias definitions until a non-alias type is reached. Returns `None` when the
 /// input is not an alias (or when an alias cycle/unresolved target prevents expansion).
 fn expand_alias_type(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option<LuaType> {
+    if let LuaType::Generic(generic) = ty
+        && semantic_model
+            .type_def_of(&generic.get_base_type_id())
+            .is_some_and(|def| def.kind == TypeDefKind::Alias)
+    {
+        return crate::semantic_model::type_eval::expand_alias_head(semantic_model, ty)
+            .filter(|expanded| expanded != ty);
+    }
     let mut current = ty.clone();
     let mut visited = Vec::new();
     loop {

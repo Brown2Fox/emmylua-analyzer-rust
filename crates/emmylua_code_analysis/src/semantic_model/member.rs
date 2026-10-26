@@ -366,7 +366,101 @@ pub(crate) fn member_info_impl(
             is_method: false,
         });
     }
-    None
+    let key_type = match key {
+        LuaMemberKey::Name(name) => LuaType::StringConst(internment::ArcIntern::new(name.clone())),
+        LuaMemberKey::Integer(index) => LuaType::IntegerConst(*index),
+        _ => return None,
+    };
+    index_value_type(model, prefix_type, &key_type).map(|typ| MemberInfo {
+        key: key.clone(),
+        typ,
+        index_key_type: None,
+        id: None,
+        file_id: None,
+        is_method: false,
+    })
+}
+
+/// Value types declared for an index domain, including inherited generic fields.
+pub(crate) fn index_value_type(
+    model: &SemanticModel,
+    owner: &LuaType,
+    key: &LuaType,
+) -> Option<LuaType> {
+    index_value_type_inner(model, owner, key, &mut Vec::new())
+}
+
+fn index_value_type_inner(
+    model: &SemanticModel,
+    owner: &LuaType,
+    key: &LuaType,
+    visited: &mut Vec<LuaType>,
+) -> Option<LuaType> {
+    let definition = match owner {
+        LuaType::Ref(id) | LuaType::Def(id) => model.type_def_of(id),
+        LuaType::Generic(generic) => model.type_def_of(&generic.get_base_type_id()),
+        _ => None,
+    };
+    if definition.is_some_and(|def| def.kind == TypeDefKind::Alias) {
+        return with_expanded_alias(model, owner, |expanded| {
+            index_value_type_inner(model, expanded, key, visited)
+        })
+        .flatten();
+    }
+    if visited.contains(owner) {
+        return None;
+    }
+    visited.push(owner.clone());
+    let result = (|| {
+        let expanded = super::type_eval::expand_alias_head(model, owner)?;
+        match &expanded {
+            LuaType::Union(union) => {
+                let mut values = Vec::new();
+                for component in union.iter() {
+                    if matches!(component, LuaType::Nil) {
+                        values.push(LuaType::Nil);
+                        continue;
+                    }
+                    values.push(index_value_type_inner(model, component, key, visited)?);
+                }
+                Some(LuaType::from_vec(values))
+            }
+            LuaType::TableGeneric(params) => match params.as_slice() {
+                [domain, value] if model.type_check_subtype(key, domain) => Some(value.clone()),
+                _ => None,
+            },
+            LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
+                match generic.get_params().as_slice() {
+                    [domain, value] if model.type_check_subtype(key, domain) => Some(value.clone()),
+                    _ => None,
+                }
+            }
+            LuaType::Object(object) => {
+                let values: Vec<_> = object
+                    .get_index_access()
+                    .iter()
+                    .filter(|(domain, _)| model.type_check_subtype(key, domain))
+                    .map(|(_, value)| value.clone())
+                    .collect();
+                (!values.is_empty()).then(|| LuaType::from_vec(values))
+            }
+            LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_) => {
+                let values: Vec<_> = member_infos_all(model, &expanded)
+                    .into_iter()
+                    .filter(|info| {
+                        info.index_key_type
+                            .as_ref()
+                            .is_some_and(|domain| model.type_check_subtype(key, domain))
+                    })
+                    .map(|info| info.typ)
+                    .collect();
+                (!values.is_empty()).then(|| LuaType::from_vec(values))
+            }
+            _ => None,
+        }
+    })();
+    visited.pop();
+    result
 }
 
 /// Members with the given key of a prefix type (all matches, overload scenario).
@@ -641,6 +735,33 @@ fn collect_members(
                     filter,
                 );
             }
+        }
+        LuaType::TableGeneric(params) if params.len() == 2 => {
+            push_member_info(
+                out,
+                filter,
+                MemberInfo {
+                    key: LuaMemberKey::Name(SmolStr::new(super::render::humanize_type(
+                        model, &params[0],
+                    ))),
+                    typ: params[1].clone(),
+                    index_key_type: Some(params[0].clone()),
+                    id: None,
+                    file_id: None,
+                    is_method: false,
+                },
+            );
+        }
+        LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
+            collect_members(
+                model,
+                &LuaType::TableGeneric(generic.get_params().to_vec().into()),
+                bindings,
+                name_bindings,
+                visited,
+                out,
+                filter,
+            );
         }
         // Generic instance: base type members + argument substitution.
         LuaType::Generic(generic) => {

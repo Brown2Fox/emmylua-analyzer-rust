@@ -556,6 +556,14 @@ impl<'db> SemanticModel<'db> {
         arg_ty: &LuaType,
         index: usize,
     ) -> Option<LuaType> {
+        if let LuaType::Union(union) = arg_ty {
+            let types: Vec<_> = union
+                .iter()
+                .filter_map(|ty| self.infer_standard_iter_slot(callee.clone(), ty, index))
+                .filter(|ty| !ty.is_unknown())
+                .collect();
+            return (!types.is_empty()).then(|| LuaType::from_vec(types));
+        }
         let LuaExpr::NameExpr(name_expr) = callee else {
             return None;
         };
@@ -566,6 +574,27 @@ impl<'db> SemanticModel<'db> {
         // Integer-index members of named types (`@field [integer] string` / `@field [1] string`)
         // do not need global pairs/ipairs signatures; infer directly from the type definition.
         if let LuaType::Ref(id) | LuaType::Def(id) = &arg_ty {
+            if name.as_str() != "ipairs" {
+                let members = member::member_infos_all(self, arg_ty);
+                let indexed: Vec<_> = members
+                    .iter()
+                    .filter(|m| m.index_key_type.is_some())
+                    .collect();
+                if !indexed.is_empty() {
+                    return Some(LuaType::from_vec(
+                        indexed
+                            .into_iter()
+                            .map(|m| {
+                                if index == 0 {
+                                    m.index_key_type.clone().unwrap()
+                                } else {
+                                    m.typ.clone()
+                                }
+                            })
+                            .collect(),
+                    ));
+                }
+            }
             if let Some(ty) = self.infer_iter_from_type_def(id, index) {
                 return Some(ty);
             }
@@ -583,6 +612,7 @@ impl<'db> SemanticModel<'db> {
         let generic_params = &docs.generic_params;
         let (key_id, value_id) = match generic_params.len() {
             n if n >= 2 => (GenericTplId::Type(0), GenericTplId::Type(1)),
+            1 if name.as_str() == "ipairs" => (GenericTplId::Type(1), GenericTplId::Type(0)),
             _ => return None,
         };
         // alias expansion (`MatchersObject` -> object).
@@ -732,6 +762,9 @@ impl<'db> SemanticModel<'db> {
                 (LuaType::String, value)
             }
             LuaType::Array(array) => (LuaType::Integer, array.get_base().clone()),
+            LuaType::TableGeneric(params) if params.len() == 2 => {
+                (params[0].clone(), params[1].clone())
+            }
             LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
                 let params = generic.get_params();
                 (
@@ -755,7 +788,7 @@ impl<'db> SemanticModel<'db> {
         let mut slots = Vec::new();
         for ret in return_list.get_return_type_list() {
             if let (_, Some(ret_type)) = ret.get_name_and_type() {
-                slots.push(self.analysis().doc_type_lua(
+                slots.push(self.doc_type_lua_in(
                     decl_file,
                     ret_type.get_syntax_id(),
                     &docs.generic_params,
@@ -764,6 +797,7 @@ impl<'db> SemanticModel<'db> {
         }
         let slot = slots.get(index)?;
         let substituted = infer::unify::substitute(slot, &bindings);
+        let substituted = type_eval::expand_alias_head(self, &substituted).unwrap_or(substituted);
         (!matches!(substituted, LuaType::Unknown)).then_some(substituted)
     }
     /// Infers `ipairs` slots from integer-index members, including inherited generic members.
@@ -1386,6 +1420,17 @@ impl<'db> SemanticModel<'db> {
     pub(crate) fn member_assignment_type(&self, member: &SemanticId, target: LuaType) -> LuaType {
         if let SemanticId::Member(key) = member
             && let Some(facts) = self.file_facts_of(key.file_id)
+            && let Some(field) = facts.member_by_id(member)
+            && matches!(field.owner, SemanticId::TypeDef(_))
+            && let Some(syntax) = field.value_syntax
+        {
+            let declared = self.doc_type_lua_rich_in(key.file_id, syntax);
+            if self.type_check_subtype(&target, &declared) {
+                return declared;
+            }
+        }
+        if let SemanticId::Member(key) = member
+            && let Some(facts) = self.file_facts_of(key.file_id)
             && let Some(def) = facts.member_by_id(member)
             && let Some(syntax) = def.doc_type_syntax
         {
@@ -1507,6 +1552,15 @@ impl<'db> SemanticModel<'db> {
     }
     /// Operator-overload return type: when operand is a named type with `---@operator`, look up the return type by operator name.
     pub fn operator_type(&self, op_name: &str, operand: &LuaType) -> Option<LuaType> {
+        self.operator_type_with_argument(op_name, operand, None)
+    }
+
+    pub(crate) fn operator_type_with_argument(
+        &self,
+        op_name: &str,
+        operand: &LuaType,
+        argument: Option<&LuaType>,
+    ) -> Option<LuaType> {
         let mut current = operand.clone();
         let mut visited = HashSet::new();
         loop {
@@ -1523,7 +1577,19 @@ impl<'db> SemanticModel<'db> {
                 continue;
             }
             let facts = self.file_facts_of(def.file_id)?;
-            let op = facts.operator_of(&def.id, op_name)?;
+            let op = facts.operators.iter().find(|op| {
+                if op.owner != def.id || op.name != op_name {
+                    return false;
+                }
+                let Some(argument) = argument else {
+                    return true;
+                };
+                let Some(param) = op.params.first() else {
+                    return false;
+                };
+                let expected = self.doc_type_lua_in(def.file_id, *param, &def.generic_params);
+                self.type_check_subtype(argument, &expected)
+            })?;
             let returns =
                 self.analysis()
                     .doc_type_lua(def.file_id, op.returns, &def.generic_params);

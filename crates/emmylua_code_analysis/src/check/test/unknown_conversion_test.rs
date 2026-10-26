@@ -2,6 +2,75 @@ use super::{check_source_with_emmyrc, count_by_code};
 use crate::{DiagnosticCode, Emmyrc};
 
 #[test]
+fn steering_iterators_and_operator_overloads_keep_types() {
+    let source = r#"
+---@generic V
+---@param t V[]
+---@return fun(t: any): integer, V
+function ipairs(t) end
+---@generic K,V
+---@param t table<K,V>
+---@return fun(t: any): K,V
+function pairs(t) end
+---@param n number
+local function num(n) end
+---@param items number[][]
+local function rows(items)
+    for _, row in ipairs(items) do num(row[1]) end
+end
+---@class Config: table<string, number>
+---@field x number
+local Config = {}
+---@param config Config
+local function copy(config)
+    for key, value in pairs(config) do config[key] = value end
+end
+---@class Vector
+---@field x number
+---@class Quaternion
+---@operator mul(Quaternion): Quaternion
+---@operator mul(Vector): Vector
+---@operator mul(number): Quaternion
+---@param q Quaternion
+---@param v Vector
+---@return Vector, Quaternion
+local function rotate(q, v) return q * v, q * 2 end
+"#;
+    let mut config = Emmyrc::default();
+    config.strict.check_unknown = true;
+    let diagnostics = check_source_with_emmyrc(source, config);
+    for code in [
+        DiagnosticCode::UnknownOperation,
+        DiagnosticCode::UnknownConversion,
+        DiagnosticCode::ReturnTypeMismatch,
+    ] {
+        assert_eq!(count_by_code(&diagnostics, code), 0, "{diagnostics:#?}");
+    }
+}
+
+#[test]
+fn steering_field_writes_keep_declared_contracts() {
+    let source = r#"
+---@class Settings: table<string, number|boolean>
+---@field amount number
+---@field enabled boolean
+local Settings = {}
+---@param settings Settings
+local function update(settings)
+    if settings.enabled then settings.enabled = false end
+    if settings.amount == 1 then settings.amount = 2 end
+end
+"#;
+    let diagnostics = check_source_with_emmyrc(source, Emmyrc::default());
+    for code in [
+        DiagnosticCode::ParamTypeMismatch,
+        DiagnosticCode::AssignTypeMismatch,
+    ] {
+        assert_eq!(count_by_code(&diagnostics, code), 0, "{diagnostics:#?}");
+    }
+}
+
+#[test]
 fn documented_name_overloads_accept_arguments_but_not_extra_arguments() {
     let mut ws = crate::VirtualWorkspace::new();
     ws.def_file(
@@ -327,4 +396,142 @@ local first, second = pair('invalid')
         count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
         1
     );
+}
+
+#[test]
+fn beamng_index_signatures_preserve_guarded_values() {
+    let source = r#"---@class CameraData
+---@field pitch? number
+local CameraData = {}
+---@class CameraModes
+---@field [string] CameraData?
+---@field orbit? CameraData
+local CameraModes = {}
+---@param modes CameraModes
+---@param name string
+local function dynamic(modes, name)
+  local camera = modes[name]
+  if camera == nil then return end
+  camera.pitch = 1
+end
+---@class Config
+---@field distance? number
+local Config = {}
+---@param config table<string, Config?>
+---@param consume fun(distance: number)
+local function optional(config, consume)
+  local orbitConfig = config.orbit
+  if orbitConfig and orbitConfig.distance ~= nil then
+    consume(orbitConfig.distance)
+  end
+end
+"#;
+    let mut config = Emmyrc::default();
+    config.strict.check_unknown = true;
+    let diagnostics = check_source_with_emmyrc(source, config);
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::UnknownOperation),
+        0,
+        "{diagnostics:?}"
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::UnknownConversion),
+        0,
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn inherited_generic_index_values_and_literal_members() {
+    let source = r#"
+---@class IndexedBase<T>
+---@field [string] T
+local IndexedBase = {}
+---@class IndexedChild: IndexedBase<number>
+---@field special string
+local IndexedChild = {}
+---@param value IndexedChild
+---@param key string
+local function read(value, key)
+    ---@type number
+    local dynamic = value[key]
+    ---@type string
+    local literal = value['special']
+    return dynamic, literal
+end
+"#;
+    let mut config = Emmyrc::default();
+    config.strict.check_unknown = true;
+    let diagnostics = check_source_with_emmyrc(source, config);
+    for code in [
+        DiagnosticCode::UnknownConversion,
+        DiagnosticCode::UnknownOperation,
+        DiagnosticCode::AssignTypeMismatch,
+    ] {
+        assert_eq!(count_by_code(&diagnostics, code), 0, "{diagnostics:?}");
+    }
+}
+
+#[test]
+fn mismatched_index_domains_do_not_invent_values() {
+    assert_eq!(
+        count(
+            r#"
+---@class IndexedNumbers
+---@field [integer] number
+local IndexedNumbers = {}
+---@param value IndexedNumbers
+---@param key string
+local function read(value, key)
+    ---@type number
+    local result = value[key]
+end
+"#,
+            true
+        ),
+        1
+    );
+}
+
+#[test]
+fn camera_config_alias_preserves_index_values() {
+    for alias in [
+        "---@alias ConfigTable table<string, CameraConfig?>",
+        "---@alias BaseConfigTable table<string, CameraConfig?>\n---@alias ConfigTable BaseConfigTable",
+        "---@alias ConfigMap<T> table<string, T?>\n---@alias ConfigTable ConfigMap<CameraConfig>",
+    ] {
+        let source = format!(
+            r#"
+---@class CameraConfig
+---@field distance? number
+local CameraConfig = {{}}
+{alias}
+---@param config ConfigTable
+---@param key string
+---@param consume fun(value: number)
+local function read(config, key, consume)
+    ---@type CameraConfig?
+    local dynamic = config[key]
+    if dynamic ~= nil then dynamic.distance = 1 end
+    local orbit = config.orbit
+    if orbit and orbit.distance ~= nil then consume(orbit.distance) end
+end
+"#
+        );
+        let mut config = Emmyrc::default();
+        config.strict.check_unknown = true;
+        let diagnostics = check_source_with_emmyrc(&source, config);
+        for code in [
+            DiagnosticCode::UnknownOperation,
+            DiagnosticCode::UnknownConversion,
+            DiagnosticCode::AssignTypeMismatch,
+            DiagnosticCode::NeedCheckNil,
+        ] {
+            assert_eq!(
+                count_by_code(&diagnostics, code),
+                0,
+                "{alias}: {diagnostics:?}"
+            );
+        }
+    }
 }

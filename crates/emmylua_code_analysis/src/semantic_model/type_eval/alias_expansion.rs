@@ -301,6 +301,29 @@ pub(super) fn needs_reduction(model: &SemanticModel, ty: &LuaType) -> bool {
 
 fn evaluate_builtin(model: &SemanticModel, ty: &LuaType) -> Option<LuaType> {
     match ty {
+        LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::Sub => {
+            let [left, right] = call.get_operands().as_slice() else {
+                return None;
+            };
+            let left = expand_alias_head(model, left)?;
+            let right = expand_alias_head(model, right)?;
+            if left.contains_tpl_node() || right.contains_tpl_node() {
+                return None;
+            }
+            let values = match left {
+                LuaType::Union(union) => union.into_vec(),
+                other => vec![other],
+            };
+            let values: Vec<_> = values
+                .into_iter()
+                .filter(|value| !model.type_check_subtype(value, &right))
+                .collect();
+            return Some(if values.is_empty() {
+                LuaType::Never
+            } else {
+                LuaType::from_vec(values)
+            });
+        }
         LuaType::Generic(generic) => {
             let id = generic.get_base_type_id();
             let params = generic.get_params();

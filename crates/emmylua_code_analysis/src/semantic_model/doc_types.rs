@@ -310,6 +310,9 @@ impl<'db> SemanticModel<'db> {
                 let left_ty = self.doc_type_lua_rich_in(file_id, left.get_syntax_id());
                 let right_ty = self.doc_type_lua_rich_in(file_id, right.get_syntax_id());
                 match binary.get_op_token().map(|op| op.get_op()) {
+                    Some(LuaTypeBinaryOperator::Sub) => LuaType::Call(Rc::new(
+                        LuaAliasCallType::new(LuaAliasCallKind::Sub, vec![left_ty, right_ty]),
+                    )),
                     Some(LuaTypeBinaryOperator::Intersection) => {
                         LuaType::Intersection(Rc::new(LuaIntersectionType::new(vec![
                             left_ty, right_ty,
@@ -535,6 +538,9 @@ impl<'db> SemanticModel<'db> {
                     }
                     Some(LuaTypeBinaryOperator::Extends) => LuaType::Call(Rc::new(
                         LuaAliasCallType::new(LuaAliasCallKind::Extends, vec![left_ty, right_ty]),
+                    )),
+                    Some(LuaTypeBinaryOperator::Sub) => LuaType::Call(Rc::new(
+                        LuaAliasCallType::new(LuaAliasCallKind::Sub, vec![left_ty, right_ty]),
                     )),
                     _ => self.analysis().doc_type_lua(file_id, type_syntax, &[]),
                 }

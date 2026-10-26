@@ -802,19 +802,16 @@ impl<'a> InferVm<'a> {
     }
 
     fn index_member_dynamic(&mut self, owner: Value, key: Value) -> Value {
-        let expanded = expand_alias_generic(self.model, &owner.ty);
-        let table_params = match &expanded {
-            LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
-                Some(generic.get_params().as_slice())
-            }
-            LuaType::TableGeneric(params) => Some(params.as_slice()),
-            _ => None,
-        };
-        if let Some(params) = table_params
-            && let [key_type, value_type] = params
-            && self.model.type_check_subtype(&key.ty, key_type)
+        if !matches!(
+            key.ty,
+            LuaType::StringConst(_)
+                | LuaType::DocStringConst(_)
+                | LuaType::IntegerConst(_)
+                | LuaType::DocIntegerConst(_)
+        ) && let Some(ty) =
+            crate::semantic_model::member::index_value_type(self.model, &owner.ty, &key.ty)
         {
-            return Value::plain(value_type.clone());
+            return Value::plain(ty);
         }
         match &key.ty {
             LuaType::StringConst(s) | LuaType::DocStringConst(s) => {
@@ -4495,10 +4492,10 @@ pub(crate) fn binary_type(
     use BinaryOperator::*;
     // Operator-overload dispatch: check the left operand first, then the right operand.
     if let Some(name) = binary_operator_name(op) {
-        if let Some(ty) = model.operator_type(name, left) {
+        if let Some(ty) = model.operator_type_with_argument(name, left, Some(right)) {
             return ty;
         }
-        if let Some(ty) = model.operator_type(name, right) {
+        if let Some(ty) = model.operator_type_with_argument(name, right, Some(left)) {
             return ty;
         }
     }
