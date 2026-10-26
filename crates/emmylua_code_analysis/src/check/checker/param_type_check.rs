@@ -827,6 +827,42 @@ fn check_arg_pairs(
         }
         // Table literals targeting object / intersection: check field by field and then fully take over.
         if let LuaExpr::TableExpr(table) = arg {
+            let table_params = match &param_ty {
+                LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
+                    Some(generic.get_params().as_slice())
+                }
+                LuaType::TableGeneric(params) => Some(params.as_slice()),
+                _ => None,
+            };
+            if let Some([key_type, value_type]) = table_params {
+                let mut invalid = false;
+                for (field, key) in table.get_fields_with_keys() {
+                    let Some(value) = field.get_value_expr() else {
+                        continue;
+                    };
+                    let key_ty = super::assign_type_mismatch::index_key_type(semantic_model, &key);
+                    let value_ty = semantic_model.type_of_expr(value.get_syntax_id());
+                    for (actual, expected) in [(&key_ty, key_type), (&value_ty, value_type)] {
+                        if !expected.contains_tpl_node()
+                            && !is_compatible(semantic_model, actual, expected)
+                        {
+                            out.push(Mismatch {
+                                code: DiagnosticCode::ParamTypeMismatch,
+                                range: value.get_range(),
+                                message: mismatch_message(semantic_model, actual, expected, name),
+                            });
+                            invalid = true;
+                            break;
+                        }
+                    }
+                    if invalid {
+                        break;
+                    }
+                }
+                if invalid {
+                    continue;
+                }
+            }
             if let Some(diagnostic) = super::assign_type_mismatch::table_unknown_conversion(
                 semantic_model,
                 &param_ty,

@@ -824,7 +824,7 @@ fn check_table_value(
     add_mismatch(context, value_expr.get_range(), expected, &value_ty);
 }
 
-fn index_key_type(semantic_model: &SemanticModel<'_>, key: &LuaIndexKey) -> LuaType {
+pub(super) fn index_key_type(semantic_model: &SemanticModel<'_>, key: &LuaIndexKey) -> LuaType {
     match key {
         LuaIndexKey::Name(_) | LuaIndexKey::String(_) => LuaType::String,
         LuaIndexKey::Integer(_) | LuaIndexKey::Idx(_) => LuaType::Integer,
