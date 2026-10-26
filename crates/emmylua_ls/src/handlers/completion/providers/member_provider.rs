@@ -110,6 +110,8 @@ fn complete_provider(builder: &mut CompletionBuilder) -> Option<()> {
     }
 
     let mut members = builder.semantic_model.member_infos(&prefix_type);
+    // Index domains describe allowed keys, not concrete member names.
+    members.retain(|member| member.index_key_type.is_none());
     // `---@class B : A local b = {}`: merge table-identity members with associated type definition members.
     let associated = associated_type_member_infos(&builder.semantic_model, &prefix_expr);
     for info in associated {
