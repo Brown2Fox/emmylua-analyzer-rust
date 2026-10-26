@@ -535,3 +535,30 @@ end
         }
     }
 }
+
+#[test]
+fn ternary_string_branches_are_safe_but_unknown_branches_are_not() {
+    let source = r#"
+---@param flag boolean
+---@param opaque unknown
+local function choose(flag, opaque)
+    local message = 'Modifier ' .. (flag ? 'pressed' : 'released')
+    ---@type string
+    local unsafe = flag ? 'known' : opaque
+end
+"#;
+    let mut config = Emmyrc::default();
+    config.strict.check_unknown = true;
+    config.runtime.version = crate::config::EmmyrcLuaVersion::LuaJIT;
+    let diagnostics = check_source_with_emmyrc(source, config);
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::UnknownOperation),
+        0,
+        "{diagnostics:?}"
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::UnknownConversion),
+        1,
+        "{diagnostics:?}"
+    );
+}

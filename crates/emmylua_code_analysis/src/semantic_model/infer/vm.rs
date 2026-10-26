@@ -94,6 +94,7 @@ pub enum Instr {
         /// Right expression syntax (kept for future extension).
         right_syntax: Option<LuaSyntaxId>,
     },
+    Ternary,
     /// Top of stack is the result.
     Result,
 }
@@ -124,6 +125,7 @@ impl Value {
 
 enum CTask {
     Expr(LuaExpr),
+    Ternary,
     AdjustToOne,
     Index(IndexKey),
     Call {
@@ -155,6 +157,7 @@ pub fn compile(expr: LuaExpr, file_id: FileId, out: &mut Vec<Instr>) {
     while let Some(task) = stack.pop() {
         match task {
             CTask::Expr(expr) => compile_expr(&expr, file_id, out, &mut stack),
+            CTask::Ternary => out.push(Instr::Ternary),
             CTask::AdjustToOne => out.push(Instr::AdjustToOne),
             CTask::Index(key) => out.push(Instr::IndexMember(key)),
             CTask::Call {
@@ -321,6 +324,19 @@ fn compile_expr(expr: &LuaExpr, file_id: FileId, out: &mut Vec<Instr>, stack: &m
                 out.push(Instr::PushUnknown);
             }
         }
+        LuaExpr::TernaryExpr(ternary) => {
+            if let Some((condition, when_true, when_false)) = ternary.get_exprs() {
+                stack.push(CTask::Ternary);
+                stack.push(CTask::AdjustToOne);
+                stack.push(CTask::Expr(when_false));
+                stack.push(CTask::AdjustToOne);
+                stack.push(CTask::Expr(when_true));
+                stack.push(CTask::AdjustToOne);
+                stack.push(CTask::Expr(condition));
+            } else {
+                out.push(Instr::PushUnknown);
+            }
+        }
         LuaExpr::BinaryExpr(binary) => {
             if let (Some(op), Some((left, right))) = (
                 binary.get_op_token().map(|t| t.get_op()),
@@ -370,7 +386,6 @@ fn compile_expr(expr: &LuaExpr, file_id: FileId, out: &mut Vec<Instr>, stack: &m
                 out.push(Instr::PushUnknown);
             }
         }
-        _ => out.push(Instr::PushUnknown),
     }
 }
 
@@ -585,6 +600,19 @@ impl<'a> InferVm<'a> {
                 }
                 let ty = binary_type(self.model, op, &left.ty, &right.ty);
                 self.stack.push(Value::plain(ty));
+            }
+            Instr::Ternary => {
+                let when_false = self.stack.pop().unwrap_or(Value::plain(LuaType::Unknown));
+                let when_true = self.stack.pop().unwrap_or(Value::plain(LuaType::Unknown));
+                let condition = self.stack.pop().unwrap_or(Value::plain(LuaType::Unknown));
+                let result = if condition.ty.is_always_truthy() {
+                    when_true
+                } else if condition.ty.is_always_falsy() {
+                    when_false
+                } else {
+                    Value::plain(LuaType::from_vec(vec![when_true.ty, when_false.ty]))
+                };
+                self.stack.push(result);
             }
             Instr::Result => {}
         }

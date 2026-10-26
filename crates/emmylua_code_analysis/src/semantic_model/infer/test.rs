@@ -1922,3 +1922,38 @@ local cameraOrVehicleChanged = (vehicleId ~= nil and vehicleId >= 0
         "boolean"
     );
 }
+
+#[test]
+fn ternary_expressions_preserve_branch_values() {
+    let source = r#"
+---@type boolean
+local condition
+local caption = condition ? "pressed" : "released"
+local falseValue = true ? false : 1
+local nilValue = true ? nil : 1
+local zeroIsTruthy = 0 ? 1 : 'wrong'
+local falseBranch = false ? 'wrong' : 2
+local nested = condition ? (condition ? 1 : 2) : 3
+---@return number, string
+local function pair() return 1, 'second' end
+local single = condition ? pair() : 4
+"#;
+    let mut config = Emmyrc::default();
+    config.runtime.version = crate::config::EmmyrcLuaVersion::LuaJIT;
+    let mut db = SemanticDatabase::new();
+    db.update_config(Arc::new(config));
+    let uri = Uri::from_str("file:///C:/ws/ternary.lua").unwrap();
+    let file_id = db.set_file_content(&uri, Some(source.to_string()));
+    let model = SemanticModel::new(&db, file_id);
+    let ty = |name| model.type_of_decl(&decl_of(&model, name)).unwrap();
+    assert_eq!(
+        crate::semantic_model::render::humanize_type(&model, &ty("caption")),
+        r#"("pressed"|"released")"#
+    );
+    assert_eq!(ty("falseValue"), LuaType::BooleanConst(false));
+    assert_eq!(ty("nilValue"), LuaType::Nil);
+    assert_eq!(ty("zeroIsTruthy"), LuaType::IntegerConst(1));
+    assert_eq!(ty("falseBranch"), LuaType::IntegerConst(2));
+    assert!(!ty("nested").is_unknown());
+    assert!(!ty("single").contain_multi_return());
+}
