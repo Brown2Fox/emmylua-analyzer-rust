@@ -71,6 +71,7 @@ fn check_signature(
                 .any(|param| param.get_name_token().is_some())
         }) || closure
             .descendants::<LuaReturnStat>()
+            .filter(|stat| stat.ancestors::<LuaClosureExpr>().next().as_ref() == Some(&closure))
             .any(|stat| stat.get_expr_list().count() > 0);
         // A leading pure `---` comment on a global function counts as documentation (no report when there are no parameters/return values).
         if is_global && !has_signature_content && has_comment_before(&closure) {
@@ -131,6 +132,9 @@ fn check_signature(
         return;
     }
     for return_stat in closure.descendants::<LuaReturnStat>() {
+        if return_stat.ancestors::<LuaClosureExpr>().next().as_ref() != Some(&closure) {
+            continue;
+        }
         if return_stat.get_expr_list().count() > doc_return_len {
             for (index, expr) in return_stat.get_expr_list().enumerate() {
                 if index >= doc_return_len {

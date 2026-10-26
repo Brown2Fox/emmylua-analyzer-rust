@@ -71,6 +71,28 @@ end
 }
 
 #[test]
+fn nested_callbacks_do_not_require_outer_return_annotations() {
+    let mut config = Emmyrc::default();
+    config
+        .diagnostics
+        .enables
+        .push(DiagnosticCode::IncompleteSignatureDoc);
+    let diagnostics = check_source_with_emmyrc(
+        r#"
+local function outer()
+    ---@return number
+    local function callback() return 1 end
+end
+"#,
+        config,
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::IncompleteSignatureDoc),
+        0
+    );
+}
+
+#[test]
 fn documented_name_overloads_accept_arguments_but_not_extra_arguments() {
     let mut ws = crate::VirtualWorkspace::new();
     ws.def_file(
