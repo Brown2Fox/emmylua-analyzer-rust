@@ -294,3 +294,5 @@ fn default_tags(code: &DiagnosticCode) -> Option<Vec<DiagnosticTag>> {
         _ => None,
     }
 }
+
+pub(crate) mod unknown_conversion;

@@ -18,6 +18,7 @@ pub struct TypeCheckContext<'db> {
     pub model: &'db SemanticModel<'db>,
     /// Subtype proofs also check object fields and generic inheritance arguments.
     pub strict_subtype: bool,
+    pub reject_unknown: bool,
     pub(super) comparisons: std::rc::Rc<std::cell::RefCell<super::comparison::Comparisons>>,
 }
 
@@ -27,6 +28,7 @@ impl<'db> TypeCheckContext<'db> {
             detail,
             model,
             strict_subtype: false,
+            reject_unknown: false,
             comparisons: Default::default(),
         }
     }

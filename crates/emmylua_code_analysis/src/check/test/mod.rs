@@ -151,3 +151,5 @@ fn test_check_config_default_enable_rules() {
     assert!(!config.is_code_enabled(&DiagnosticCode::SyntaxError));
     assert!(config.is_code_enabled(&DiagnosticCode::UnknownDocTag));
 }
+
+mod unknown_conversion_test;

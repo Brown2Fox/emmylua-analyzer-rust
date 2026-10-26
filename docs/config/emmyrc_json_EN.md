@@ -298,6 +298,7 @@ Disabled by default:
 - `incomplete-signature-doc`
 - `no-implicit-any` (enabled by `strict.noImplicitAny`)
 - `unknown-operation` (enabled by `strict.checkUnknown`)
+- `unknown-conversion` (enabled by `strict.checkUnknown`)
 - `missing-global-doc`
 - `unknown-doc-tag`
 - `non-literal-expressions-in-assert`
@@ -464,7 +465,7 @@ file's type/visibility metadata and disappear when the file is removed.
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `noImplicitAny` | `boolean` | `false` | Report function parameters without a declared or inferred type |
-| `checkUnknown` | `boolean` | `false` | Require narrowing unknown values before type-dependent operations |
+| `checkUnknown` | `boolean` | `false` | Require narrowing unknown values before type-dependent operations and typed assignments |
 | `requirePath` | `boolean` | `false` | Require import paths must match configured module paths |
 | `typeCall` | `boolean` | `false` | Apply stricter checking to type calls |
 | `arrayIndex` | `boolean` | `true` | Apply stricter array index checks |
@@ -529,8 +530,11 @@ end
 Flow narrowing applies at the operation, including guarded class fields. A nil
 check alone does not establish an operand type. Narrowing inside one branch does
 not make the value known after the branches merge. Unknown values may still be
-stored and passed around; this option does not yet change assignment, parameter
-or return compatibility rules. Library and meta definitions remain exempt, but
+stored and passed to `unknown` or explicit `any` targets. Assigning them to a
+concrete type, passing them to a typed parameter, or returning them under a
+concrete return annotation reports `unknown-conversion`. This includes unknown
+components of unions, containers and function signatures. Multiple result slots
+are checked separately. Library and meta definitions remain exempt, but
 unknown results from their APIs are checked when used in project code.
 
 The rule supports `diagnostics.enables`, `diagnostics.disable`, severity overrides

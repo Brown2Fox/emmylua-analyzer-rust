@@ -83,6 +83,33 @@ pub(crate) fn check_type(
     check_general_type_compact(&mut context, source, target)
 }
 
+/// Conversion checks are isolated from inference, where unknown can be a provisional result.
+pub(crate) fn rejects_unknown_conversion(
+    model: &SemanticModel,
+    source: &LuaType,
+    target: &LuaType,
+) -> bool {
+    let enabled = model.db().config_input().is_some_and(|config| {
+        config.strict.check_unknown
+            || config
+                .diagnostics
+                .enables
+                .contains(&crate::DiagnosticCode::UnknownConversion)
+    });
+    if !enabled {
+        return false;
+    }
+    let mut baseline = TypeCheckContext::new(model, false);
+    baseline.strict_subtype = true;
+    if check_general_type_compact(&mut baseline, source, target).is_err() {
+        return false;
+    }
+    let mut context = TypeCheckContext::new(model, false);
+    context.strict_subtype = true;
+    context.reject_unknown = true;
+    matches!(check_general_type_compact(&mut context, source, target), Err(err) if err.is_type_not_match())
+}
+
 /// A complete alternative proves a match even if another is unresolved.
 /// Without a match, an unresolved alternative prevents a definite rejection.
 fn check_alternatives(
@@ -283,6 +310,7 @@ fn check_general_type_compact_inner(
     }
 
     match source {
+        LuaType::Unknown if context.reject_unknown => Err(context.mismatch(source, compact_type)),
         LuaType::Unknown | LuaType::Any => Ok(()),
         LuaType::TplRef(tpl) => {
             if let Some(source_constraint) = tpl.get_constraint() {

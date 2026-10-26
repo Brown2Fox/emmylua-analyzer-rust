@@ -86,6 +86,7 @@ impl CheckConfig {
         }
         if emmyrc.strict.check_unknown {
             enabled.insert(DiagnosticCode::UnknownOperation);
+            enabled.insert(DiagnosticCode::UnknownConversion);
         }
         Self {
             disabled: emmyrc.diagnostics.disable.iter().cloned().collect(),

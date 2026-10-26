@@ -4834,6 +4834,10 @@ fn remove_falsy(ty: LuaType) -> LuaType {
         LuaType::Union(union) => union.into_vec(),
         other => vec![other],
     } {
+        if matches!(component, LuaType::Boolean) {
+            types.push(LuaType::BooleanConst(true));
+            continue;
+        }
         if !matches!(
             component,
             LuaType::Nil
@@ -4858,6 +4862,10 @@ fn remove_truthy(ty: LuaType) -> LuaType {
         LuaType::Union(union) => union.into_vec(),
         other => vec![other],
     } {
+        if matches!(component, LuaType::Boolean) {
+            types.push(LuaType::BooleanConst(false));
+            continue;
+        }
         if matches!(
             component,
             LuaType::Nil | LuaType::BooleanConst(false) | LuaType::DocBooleanConst(false)

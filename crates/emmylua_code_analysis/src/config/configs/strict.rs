@@ -16,7 +16,7 @@ pub struct EmmyrcStrict {
     /// Report function parameters whose type cannot be inferred or explicitly declared.
     #[serde(default)]
     pub no_implicit_any: bool,
-    /// Require narrowing unknown values before type-dependent operations.
+    /// Require narrowing unknown values before type-dependent operations and conversions to concrete types.
     #[serde(default)]
     pub check_unknown: bool,
     /// Whether to enable strict mode require path.

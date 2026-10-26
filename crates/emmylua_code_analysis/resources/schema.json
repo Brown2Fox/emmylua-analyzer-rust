@@ -166,6 +166,7 @@
         {
           "type": "string",
           "enum": [
+            "unknown-conversion",
             "none"
           ]
         },
@@ -1087,7 +1088,7 @@
           "default": true
         },
         "checkUnknown": {
-          "description": "Require narrowing unknown values before type-dependent operations.",
+          "description": "Require narrowing unknown values before type-dependent operations and conversions to concrete types.",
           "type": "boolean",
           "default": false
         },

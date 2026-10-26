@@ -18,7 +18,10 @@ use crate::semantic_model::render::humanize_type;
 pub struct AssignTypeMismatchChecker;
 
 impl Checker for AssignTypeMismatchChecker {
-    const CODES: &[DiagnosticCode] = &[DiagnosticCode::AssignTypeMismatch];
+    const CODES: &[DiagnosticCode] = &[
+        DiagnosticCode::AssignTypeMismatch,
+        DiagnosticCode::UnknownConversion,
+    ];
 
     fn check(context: &mut CheckContext<'_>, semantic_model: &SemanticModel<'_>) {
         let Some(tree) = semantic_model.syntax_tree() else {
@@ -162,7 +165,18 @@ fn check_call_args(
                 continue;
             };
             if is_structured_table_target(semantic_model, param_ty) {
-                check_table_fields(context, semantic_model, param_ty, &table);
+                let mut fields = CheckContext::new(semantic_model, context.config.clone());
+                check_table_fields(&mut fields, semantic_model, param_ty, &table);
+                for diagnostic in fields.into_diagnostics() {
+                    // Unknown conversions belong to the overload-aware parameter checker.
+                    if diagnostic.code != DiagnosticCode::UnknownConversion {
+                        context.add_diagnostic(
+                            diagnostic.code,
+                            diagnostic.range,
+                            diagnostic.message,
+                        );
+                    }
+                }
             }
         }
     }
@@ -197,6 +211,15 @@ fn check_inline_table_fields(
         };
         let target = semantic_model.doc_type_lua(doc_syntax);
         let value_ty = semantic_model.type_of_expr(value_expr.get_syntax_id());
+        if super::unknown_conversion::report(
+            context,
+            semantic_model,
+            &value_ty,
+            &target,
+            value_expr.get_range(),
+        ) {
+            continue;
+        }
         if matches!(
             value_ty,
             LuaType::Unknown | LuaType::Any | LuaType::Never | LuaType::Nil
@@ -215,6 +238,19 @@ fn check_local(
 ) {
     let name_list = stat.get_local_name_list().collect::<Vec<_>>();
     let value_exprs = stat.get_value_exprs().collect::<Vec<_>>();
+    let values = super::unknown_conversion::expression_types(
+        semantic_model,
+        &value_exprs,
+        Some(name_list.len()),
+    );
+    for (index, local_name) in name_list.iter().enumerate().skip(value_exprs.len()) {
+        if let Some(id) = semantic_model.decl_by_offset(local_name.get_position())
+            && let Some(target) = semantic_model.type_of_decl(&id)
+            && let Some((source, range)) = values.get(index)
+        {
+            super::unknown_conversion::report(context, semantic_model, source, &target, *range);
+        }
+    }
     for (index, local_name) in name_list.iter().enumerate() {
         let Some(expr) = value_exprs.get(index) else {
             break;
@@ -270,6 +306,23 @@ fn check_assign(
     stat: &LuaAssignStat,
 ) {
     let (vars, exprs) = stat.get_var_and_expr_list();
+    let values =
+        super::unknown_conversion::expression_types(semantic_model, &exprs, Some(vars.len()));
+    for (index, var) in vars.iter().enumerate().skip(exprs.len()) {
+        let target = match var {
+            LuaVarExpr::NameExpr(name) => semantic_model
+                .resolve_name(name.get_position())
+                .map(|id| semantic_model.type_of_decl_assign_target_at(&id, name.get_position())),
+            LuaVarExpr::IndexExpr(index) => {
+                Some(semantic_model.type_of_expr_at(index.get_syntax_id(), index.get_position()))
+            }
+        };
+        if let Some(target) = target
+            && let Some((source, range)) = values.get(index)
+        {
+            super::unknown_conversion::report(context, semantic_model, source, &target, *range);
+        }
+    }
     for (var, expr) in vars.iter().zip(exprs.iter()) {
         match var {
             LuaVarExpr::NameExpr(name_expr) => {
@@ -489,6 +542,18 @@ fn check_value_against(
     target: &LuaType,
     value_expr: &LuaExpr,
 ) {
+    let conversion_type = assignment_value_type(semantic_model, value_expr)
+        .get_result_slot_type(0)
+        .unwrap_or(LuaType::Nil);
+    if super::unknown_conversion::report(
+        context,
+        semantic_model,
+        &conversion_type,
+        target,
+        value_expr.get_range(),
+    ) {
+        return;
+    }
     if let LuaExpr::TableExpr(table) = value_expr {
         // Plain table target without a declared type: keep old behavior — don't check each field or report a type mismatch (same table identity).
         if matches!(
@@ -740,6 +805,15 @@ fn check_table_value(
     }
     let value_ty =
         semantic_model.type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start());
+    if super::unknown_conversion::report(
+        context,
+        semantic_model,
+        &value_ty,
+        expected,
+        value_expr.get_range(),
+    ) {
+        return;
+    }
     // Nil omits an entry from a table constructor.
     let expected_or_absent = LuaType::from_vec(vec![expected.clone(), LuaType::Nil]);
     if matches!(value_ty, LuaType::Unknown | LuaType::Any | LuaType::Never)
@@ -933,4 +1007,30 @@ fn add_mismatch(
         ),
     };
     context.add_diagnostic(DiagnosticCode::AssignTypeMismatch, range, message);
+}
+
+/// Field conversions for one parameter candidate; the caller chooses the overload.
+pub(super) fn table_unknown_conversion(
+    model: &SemanticModel<'_>,
+    target: &LuaType,
+    table: &LuaTableExpr,
+) -> Option<super::Diagnostic> {
+    let config = model.db().config_input()?;
+    if !config.strict.check_unknown
+        && !config
+            .diagnostics
+            .enables
+            .contains(&DiagnosticCode::UnknownConversion)
+    {
+        return None;
+    }
+    let mut context = CheckContext::new(
+        model,
+        std::sync::Arc::new(crate::check::CheckConfig::new(config)),
+    );
+    check_table_fields(&mut context, model, target, table);
+    context
+        .into_diagnostics()
+        .into_iter()
+        .find(|diagnostic| diagnostic.code == DiagnosticCode::UnknownConversion)
 }

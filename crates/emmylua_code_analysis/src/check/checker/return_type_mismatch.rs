@@ -17,7 +17,10 @@ use crate::semantic_model::render::humanize_type;
 pub struct ReturnTypeMismatchChecker;
 
 impl Checker for ReturnTypeMismatchChecker {
-    const CODES: &[DiagnosticCode] = &[DiagnosticCode::ReturnTypeMismatch];
+    const CODES: &[DiagnosticCode] = &[
+        DiagnosticCode::ReturnTypeMismatch,
+        DiagnosticCode::UnknownConversion,
+    ];
 
     fn check(context: &mut CheckContext<'_>, semantic_model: &SemanticModel<'_>) {
         let Some(signatures) = semantic_model.signatures() else {
@@ -79,7 +82,24 @@ fn check_return_stat(
     expected: &LuaType,
     docs: &SignatureDoc,
 ) {
-    for expr in ret.get_expr_list() {
+    let expressions = ret.get_expr_list().collect::<Vec<_>>();
+    for (index, (actual, range)) in
+        super::unknown_conversion::expression_types(semantic_model, &expressions, None)
+            .into_iter()
+            .enumerate()
+    {
+        let target = if docs.returns.len() > 1 {
+            docs.returns
+                .get(index)
+                .map(|syntax| semantic_model.doc_type_lua(*syntax))
+        } else {
+            expected.get_result_slot_type(index)
+        };
+        if let Some(target) = target {
+            super::unknown_conversion::report(context, semantic_model, &actual, &target, range);
+        }
+    }
+    for expr in expressions {
         let raw = semantic_model.type_of_expr_at(expr.get_syntax_id(), expr.get_range().start());
         // Uninstantiated function generic argument `Ref("T")`: check against the constraint when present, otherwise skip.
         if is_unresolved_generic_ref(semantic_model, &raw, docs) {

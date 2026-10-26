@@ -1645,6 +1645,18 @@ impl<'a> InferVm<'a> {
                 self.select_callable_partial(&candidates, args, colon_call, match_receiver.as_ref())
             })
         else {
+            // A failed argument match does not erase an unambiguous concrete
+            // return contract. Argument diagnostics report the call mismatch.
+            if let Some(first) = candidates.first() {
+                let ret = first.get_ret();
+                if !ret.contains_tpl_node()
+                    && candidates
+                        .iter()
+                        .all(|candidate| candidate.get_ret() == ret)
+                {
+                    return Value::plain(ret.clone());
+                }
+            }
             return Value::plain(LuaType::Unknown);
         };
 
