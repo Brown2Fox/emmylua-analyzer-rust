@@ -3,6 +3,106 @@ mod test {
     use crate::check::test::check_source;
     use crate::{DiagnosticCode, VirtualWorkspace};
 
+    mod generic_tables {
+        use super::*;
+
+        use DiagnosticCode::ParamTypeMismatch;
+
+        fn assert_diagnostics(source: &str, expected: &[DiagnosticCode]) {
+            let diagnostics = check_source(source);
+            assert_eq!(
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+                expected,
+                "{source}\n{diagnostics:?}"
+            );
+        }
+
+        #[test]
+        fn test_record_constructors_ignore_overwritten_nested_values() {
+            for constructor in [
+                "{item = {}, [key] = {required = 'ok'}}",
+                "({item = {}, [key] = ({required = 'ok'})})",
+            ] {
+                assert_diagnostics(
+                    &format!(
+                        "local key = 'item'\n---@param opts {{item: {{required: string}}}}\nlocal function accept(opts) return opts end\naccept({constructor})\npcall(accept, {constructor})\n---@type {{item: {{required: string}}}}\nlocal value = {constructor}\nreturn value"
+                    ),
+                    &[],
+                );
+            }
+        }
+
+        #[test]
+        fn test_object_index_signatures_allow_nil_entries() {
+            assert_diagnostics(
+                r#"
+                ---@param opts {values: table<string, string>, [string]: string}
+                local function accept(opts) return opts end
+                accept({values = {}, label = nil})
+                "#,
+                &[],
+            );
+        }
+
+        #[test]
+        fn test_generic_table_overload_requires_the_whole_call_to_match() {
+            assert_diagnostics(
+                r#"
+                ---@param values table<integer, string>
+                ---@param mode string
+                ---@overload fun(values: table<string, integer>, mode: integer)
+                local function accept(values, mode) return values, mode end
+                accept({'a'}, 'a')
+                accept({count = 1}, 1)
+                accept({count = 1}, 'a')
+                "#,
+                &[ParamTypeMismatch],
+            );
+        }
+    }
+
+    #[test]
+    fn test_class_method_self_field_diagnostic() {
+        let diagnostics = check_source(
+            r#"
+            ---@class LinkedTableA
+            local M
+
+            function M:init()
+                self.a = 1
+            end
+            "#,
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != DiagnosticCode::InjectField),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn test_class_method_self_field_reference_is_rejected() {
+        let diagnostics = check_source(
+            r#"
+            ---@class LinkedTableA
+
+            ---@type LinkedTableA
+            local M
+
+            function M:init()
+                self.a = 1
+            end
+            "#,
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::InjectField),
+            "{diagnostics:?}"
+        );
+    }
+
     #[test]
     fn test_table_literal_integral_float_keys() {
         let diagnostics = check_source(
@@ -19,6 +119,9 @@ mod test {
             ---@field [9223372036854774784] integer
             ---@type LargeNumeric
             local large = {[9223372036854774784.0] = 1}
+            ---@param value Numeric
+            local function accept(value) return value end
+            accept({[0.0] = 0, [1e0] = 1})
             return decimal, exponent, large
             "#,
         );
@@ -497,10 +600,67 @@ mod test {
             "#
         ));
     }
+    #[test]
+    fn test_partial_class_redeclaration_keeps_self_field() {
+        let diagnostics = check_source(
+            r#"
+            ---@class (partial) Develop.AttrA
+            local M = {}
+
+            ---@class (partial) Develop.AttrA
+
+            function M:__init()
+                self.a = 1
+            end
+            "#,
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != DiagnosticCode::InjectField),
+            "{diagnostics:?}"
+        );
+    }
+    #[test]
+    fn test_cross_file_redeclaration_keeps_self_field() {
+        let meta = "---@meta
+
+---@class Ability
+";
+        let good = r#"
+            ---@class (partial) Ability
+            local M = {}
+
+            function M:__init(id)
+                self.id = id
+            end
+            "#;
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file("aaa_meta.lua", meta);
+        let good_id = ws.def_file("zzz_good.lua", good);
+
+        let inject_count = |ws: &VirtualWorkspace| {
+            ws.analysis
+                .diagnose_file(good_id, tokio_util::sync::CancellationToken::new())
+                .unwrap()
+                .into_iter()
+                .filter(|d| {
+                    matches!(&d.code, Some(lsp_types::NumberOrString::String(c)) if c == "inject-field")
+                })
+                .count()
+        };
+        assert_eq!(inject_count(&ws), 0);
+
+        // 重算结果应保持一致.
+        let uri = ws.analysis.get_uri(good_id).expect("uri");
+        ws.analysis.update_file_by_uri(&uri, Some(good.to_string()));
+        assert_eq!(inject_count(&ws), 0);
+    }
 }
 
 // These tests load the standard library because its `table` declaration is
 // what made dictionaries incorrectly look like closed records.
+
 mod dictionary_constructor {
     use crate::{DiagnosticCode, VirtualWorkspace};
     use googletest::prelude::*;
