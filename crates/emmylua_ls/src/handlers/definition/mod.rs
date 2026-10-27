@@ -200,7 +200,24 @@ fn definition_generated(
     }
 
     // 3. Semantic declarations (decl / member / typedef).
-    let decl = model.find_decl(token.clone().into())?;
+    let decl = model.find_decl(token.clone().into()).or_else(|| {
+        // Member resolution deliberately uses non-flow types to avoid inference cycles.
+        // Navigation can use the narrowed type at this usage when that lookup has no target.
+        let index = token
+            .parent()
+            .and_then(emmylua_parser::LuaIndexExpr::cast)?;
+        let prefix = index.get_prefix_expr()?;
+        let key = index.get_index_key()?;
+        let key = match key {
+            emmylua_parser::LuaIndexKey::Name(name) => {
+                emmylua_code_analysis::LuaMemberKey::Name(name.get_name_text().into())
+            }
+            _ => return None,
+        };
+        model
+            .member_info(&model.type_of_expr(prefix.get_syntax_id()), &key)?
+            .id
+    })?;
     goto_def_definition::goto_def_definition(&model, &analysis.db, &decl, &token)
 }
 
@@ -291,5 +308,45 @@ mod cua_tests {
         analysis.update_file_by_uri(&cua_uri, Some("local x:".into()));
         assert!(definition(&analysis, cua_id, Position::new(0, 6)).is_none());
         assert!(type_definition(&analysis, cua_id, Position::new(0, 6)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod module_member_tests {
+    use super::*;
+    use emmylua_code_analysis::file_path_to_uri;
+    #[test]
+    fn navigates_nullable_module_runtime_method() {
+        for ext in ["lua", "cua"] {
+            let mut analysis = EmmyLuaAnalysis::new();
+            let root = std::env::current_dir().unwrap();
+            analysis.add_main_workspace(root.clone());
+            let settings = root.join(format!("settings.{ext}"));
+            let input = root.join(format!("input.{ext}"));
+            let settings_uri = file_path_to_uri(&settings).unwrap();
+            let input_uri = file_path_to_uri(&input).unwrap();
+            let source = "---@class SettingsModule\nlocal M = {}\nfunction M.drawSlider(key, highlight) end\nreturn M";
+            let caller = if ext == "cua" {
+                "-- Cua module\nlocal Settings: SettingsModule? = nil\nlocal function draw()\n if Settings == nil then return end\n Settings.drawSlider('orbitSens', true)\nend"
+            } else {
+                "---@type SettingsModule?\nlocal Settings = nil\nlocal function draw()\n if Settings == nil then return end\n Settings.drawSlider('orbitSens', true)\nend"
+            };
+            analysis.update_files_by_path(vec![
+                (settings, Some(source.into())),
+                (input, Some(caller.into())),
+            ]);
+            let id = analysis.get_file_id(&input_uri).unwrap();
+            let response = definition(&analysis, id, Position::new(4, 13));
+            let locations = match response {
+                Some(GotoDefinitionResponse::Array(locations)) => locations,
+                Some(GotoDefinitionResponse::Scalar(location)) => vec![location],
+                other => panic!("{ext}: {other:?}"),
+            };
+            assert!(
+                locations.iter().any(|location| location.uri == settings_uri
+                    && location.range.start == Position::new(2, 11)),
+                "{ext}: {locations:?}"
+            );
+        }
     }
 }
