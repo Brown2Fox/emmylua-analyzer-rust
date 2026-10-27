@@ -6,7 +6,7 @@ The compiler and language server share the Cua frontend. Ordinary `.lua` files
 continue to use the existing Lua parser.
 
 ```lua
----@alias CameraName string
+alias CameraName = string
 
 local enabled: boolean = false
 
@@ -36,6 +36,39 @@ text becomes spaces; expressions, comments and string literals remain intact.
 Diagnostics refer to the original source. Internally generated annotations are
 only input to the checker and do not appear in emitted Lua.
 
+## Class and alias declarations
+
+```lua
+alias ParamKind = 'slider' | 'scheme' | 'cbox'
+
+class ParamDef
+    kind: ParamKind
+    displayName: string
+    options?: string[]
+end
+
+class (exact) SliderDef: ParamDef
+    minValue: number
+    maxValue: number
+end
+
+class Box<T>
+    value: T
+end
+
+alias Dictionary<T> = table<string, T>
+```
+
+These declare types only: they emit no runtime tables or constructors.
+An explicitly typed table immediately following its class declaration
+(`local M: Module = {}`) supplies that class's runtime implementation, as with
+an attached `---@class` annotation; methods added to it belong to the class. Class
+headers and fields use EmmyLua types, attributes and visibility modifiers;
+index fields use `[string]: Value`. Declarations begin on their own line, with
+class fields on following lines and `end` closing the class. Existing comment
+annotations remain supported. Type names and fields support highlighting and
+navigation to their original declarations.
+
 ## Supported in this prototype
 
 - Local variable types: `local value: number = 1`.
@@ -61,8 +94,8 @@ modules, `.emmyrc` settings and configured libraries; `.cua` modules resolve
 through ordinary `require` names. Workspace strict settings and Lua version
 are preserved; `--lua-version` overrides the configured version. Building all
 project files remains the responsibility of the build script. Imports are not rewritten.
-Cua (Cats + Lua) sources use the `.cua` extension. Aliases, classes, generics
-on declarations, named flow casts (`---@cast`) and overload declarations still use EmmyLua annotations.
+Cua (Cats + Lua) sources use the `.cua` extension. Function generics, named flow
+casts (`---@cast`) and overload declarations still use EmmyLua annotations.
 This is type erasure, not a runtime validator, and all existing analyzer limits
 still apply. Lua 5.1 is the default target; other versions require `--lua-version`.
 

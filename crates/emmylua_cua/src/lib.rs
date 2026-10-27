@@ -62,6 +62,7 @@ struct Frontend<'a> {
     annotations: Vec<Annotation>,
     pending_types: Vec<Range<usize>>,
     casts: Vec<usize>,
+    declaration_markers: Vec<Range<usize>>,
 }
 
 pub fn transpile(source: &str, level: LuaLanguageLevel) -> Result<Output, Error> {
@@ -88,10 +89,12 @@ pub fn transpile(source: &str, level: LuaLanguageLevel) -> Result<Output, Error>
         annotations: vec![],
         pending_types: vec![],
         casts: vec![],
+        declaration_markers: vec![],
     };
     let mut i = 0;
     while i < frontend.tokens.len() {
         i = match frontend.kind(i) {
+            K::TkName if frontend.is_declaration(i) => frontend.declaration(i)?,
             K::TkLocal if frontend.kind(i + 1) != K::TkFunction => frontend.local(i)?,
             K::TkFunction => frontend.function(i)?,
             K::TkName if frontend.is_cast(i) => frontend.cast(i)?,
@@ -179,6 +182,9 @@ pub fn transpile(source: &str, level: LuaLanguageLevel) -> Result<Output, Error>
         type_markers: frontend
             .erased
             .iter()
+            .filter(|range| {
+                source[range.start..].starts_with(':') || source[range.start..].starts_with("as")
+            })
             .map(|range| {
                 let length = if source[range.start..].starts_with("as") {
                     2
@@ -187,11 +193,149 @@ pub fn transpile(source: &str, level: LuaLanguageLevel) -> Result<Output, Error>
                 };
                 range.start..range.start + length
             })
+            .chain(frontend.declaration_markers)
             .collect(),
     })
 }
 
 impl Frontend<'_> {
+    fn is_declaration(&self, i: usize) -> bool {
+        matches!(self.text(i), "class" | "alias")
+            && self.source[..self.start(i)]
+                .rsplit('\n')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+            && (self.kind(i + 1) == K::TkName
+                || (self.text(i) == "class"
+                    && self.kind(i + 1) == K::TkLeftParen
+                    && self.kind(i + 2) == K::TkName
+                    && self.kind(i + 3) == K::TkRightParen
+                    && self.kind(i + 4) == K::TkName))
+    }
+
+    fn declaration(&mut self, anchor: usize) -> Result<usize, Error> {
+        let is_class = self.text(anchor) == "class";
+        let mut text = String::from("\n---@");
+        let mut mappings = vec![];
+        let mut markers = vec![];
+        let mut copy = |text: &mut String, range: Range<usize>| {
+            let start = text.len();
+            text.push_str(&self.source[range.clone()]);
+            mappings.push((start..text.len(), range));
+        };
+        copy(&mut text, self.start(anchor)..self.end(anchor));
+        text.push(' ');
+        let header_start = self.start(anchor + 1);
+        let header_end = self.source[header_start..]
+            .find(['\r', '\n'])
+            .map_or(self.source.len(), |n| header_start + n);
+        let mut i = anchor + 1;
+        if is_class {
+            // Class headers use EmmyLua's name, generic, attribute and inheritance grammar.
+            let end = self.source[header_start..header_end]
+                .find("--")
+                .map_or(header_end, |n| header_start + n);
+            copy(&mut text, header_start..end);
+            text.push('\n');
+            i = self
+                .tokens
+                .partition_point(|token| token.range.start_offset < header_end);
+            while self.kind(i) != K::TkEnd {
+                if self.kind(i) == K::TkEof {
+                    return Err(self.error(i, "expected 'end' after class fields"));
+                }
+                let field_start = self.start(i);
+                let mut depth = 0;
+                let mut colon = i;
+                loop {
+                    if self.kind(colon) == K::TkEof
+                        || self.kind(colon) == K::TkEnd
+                        || self.source[field_start..self.start(colon)].contains('\n')
+                    {
+                        return Err(self.error(colon, "expected ':' after class field name"));
+                    }
+                    match self.kind(colon) {
+                        K::TkLeftBracket => depth += 1,
+                        K::TkRightBracket => depth -= 1,
+                        K::TkColon if depth == 0 => break,
+                        _ => {}
+                    }
+                    colon += 1;
+                }
+                markers.push(self.start(colon)..self.end(colon));
+                let (_, next, end) = self.ty(colon + 1)?;
+                text.push_str("---@field ");
+                copy(&mut text, field_start..self.start(colon));
+                text.push(' ');
+                copy(&mut text, self.start(colon + 1)..end);
+                text.push('\n');
+                i = next;
+                if matches!(self.kind(i), K::TkComma | K::TkSemicolon) {
+                    i += 1;
+                }
+            }
+        } else {
+            while !matches!(self.kind(i), K::TkAssign | K::TkEof) && self.start(i) < header_end {
+                i += 1;
+            }
+            if self.kind(i) != K::TkAssign {
+                return Err(self.error(i, "expected '=' in alias declaration"));
+            }
+            markers.push(self.start(i)..self.end(i));
+            copy(&mut text, header_start..self.start(i));
+            text.push(' ');
+            let (_, next, end) = self.ty(i + 1)?;
+            copy(&mut text, self.start(i + 1)..end);
+            text.push('\n');
+            i = next;
+        }
+        let end = if is_class {
+            self.end(i)
+        } else {
+            self.end(i - 1)
+        };
+        // An explicitly typed table directly after its class is its implementation.
+        // Other following statements must not inherit the declaration's annotation.
+        let class_name = if self.kind(anchor + 1) == K::TkName {
+            self.text(anchor + 1)
+        } else {
+            self.text(anchor + 4)
+        };
+        let binds_implementation = is_class
+            && self.kind(i + 1) == K::TkLocal
+            && self.kind(i + 2) == K::TkName
+            && self.kind(i + 3) == K::TkColon
+            && self.text(i + 4) == class_name
+            && self.kind(i + 5) == K::TkAssign
+            && self.kind(i + 6) == K::TkLeftBrace;
+        if !binds_implementation {
+            text.push_str("do end\n");
+        }
+        let parsed = LuaParser::parse(&text, ParserConfig::default());
+        if !parsed.get_errors().is_empty() {
+            return Err(self.error(anchor, "invalid class or alias declaration"));
+        }
+        self.declaration_markers.extend(markers);
+        self.annotations.push(Annotation {
+            offset: if binds_implementation {
+                self.start(i + 1)
+            } else {
+                self.start(anchor)
+            },
+            text,
+            types: mappings,
+        });
+        self.erased.push(self.start(anchor)..end);
+        if is_class {
+            self.declaration_markers.push(self.start(i)..self.end(i));
+            Ok(i + 1)
+        } else {
+            Ok(i)
+        }
+    }
+
     fn is_cast(&self, i: usize) -> bool {
         self.text(i) == "as"
             && i > 0

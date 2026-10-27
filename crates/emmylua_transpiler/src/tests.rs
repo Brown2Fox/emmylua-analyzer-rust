@@ -239,3 +239,74 @@ fn unparenthesized_casts_cover_complete_expressions() {
         "local label = options[index]          "
     );
 }
+
+#[test]
+fn class_and_alias_declarations_are_erased_and_checked() {
+    let source = "alias Kind = 'slider' | 'cbox'\nclass ParamDef\n kind: Kind\n displayName: string\n options?: string[]\nend\nlocal value: ParamDef = {kind = 'slider', displayName = 'Distance'}\nreturn value";
+    let output = compile(source);
+    assert_eq!(output.lua.len(), source.len());
+    assert!(!output.lua.contains("class"));
+    assert!(output.analysis_lua.contains("---@class ParamDef"));
+    assert!(output.analysis_lua.contains("---@field options? string[]"));
+    assert!(
+        diagnostics(source, "").is_empty(),
+        "{:?}",
+        diagnostics(source, "")
+    );
+    let invalid = source.replace("displayName = 'Distance'", "displayName = 12");
+    assert!(!diagnostics(&invalid, "").is_empty());
+    for name in ["ParamDef", "Kind", "displayName", "string"] {
+        let offset = source.find(name).unwrap();
+        assert_eq!(
+            output.original_offset(output.generated_offset(offset)),
+            offset
+        );
+    }
+}
+
+#[test]
+fn class_headers_fields_and_invalid_declarations() {
+    let source = "class Base\n id: integer\nend\nclass (exact) Box<T>: Base\n value: T\n [string]: any\nend\nalias Items<T> = table<string, T>\nlocal unrelated = {other = 1}\nreturn unrelated";
+    let output = compile(source);
+    assert!(
+        output
+            .analysis_lua
+            .contains("---@class (exact) Box<T>: Base")
+    );
+    assert!(output.analysis_lua.contains("---@alias Items<T>"));
+    assert!(
+        diagnostics(source, "").is_empty(),
+        "{:?}",
+        diagnostics(source, "")
+    );
+    for source in [
+        "class Broken\n value: number",
+        "class Broken\n value number\nend",
+        "alias Broken number",
+        "alias Broken =",
+        "class Broken\n value:\nend",
+    ] {
+        assert!(
+            transpile(source, LuaLanguageLevel::Lua51).is_err(),
+            "{source}"
+        );
+    }
+    let plain = "class()\nalias({})\nlocal class = 1\nlocal alias = 2\nreturn class + alias";
+    assert_eq!(compile(plain).lua, plain);
+}
+
+#[test]
+fn native_class_binds_its_explicit_runtime_implementation() {
+    let source = "class Module\nend\nlocal M: Module = {}\nfunction M.get(): number return 42 end\nlocal function use(value: Module): number return value.get() end\nreturn use(M)";
+    assert!(
+        diagnostics(source, "").is_empty(),
+        "{:?}",
+        diagnostics(source, "")
+    );
+    let source = "class (exact) Record\n name: string\nend\nlocal unrelated: table<string, number> = {other = 1}\nreturn unrelated";
+    assert!(
+        diagnostics(source, "").is_empty(),
+        "{:?}",
+        diagnostics(source, "")
+    );
+}

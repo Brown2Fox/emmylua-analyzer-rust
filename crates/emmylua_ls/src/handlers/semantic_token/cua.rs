@@ -60,7 +60,7 @@ pub(super) fn map_tokens(document: &CuaDocument, tokens: Vec<SemanticToken>) -> 
         }
     }
     for range in &projection.type_markers {
-        let kind = if &document.source[range.clone()] == "as" {
+        let kind = if matches!(&document.source[range.clone()], "as" | "end") {
             SemanticTokenTypeKind::Keyword
         } else {
             SemanticTokenTypeKind::Operator
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn inline_and_cast_types_match_and_unicode_ranges_are_valid() {
-        let source = "local emoji = '🙂'; local value: number = 1\r\nlocal result = value as number\r\n---@class Camera\r\nlocal Camera = {}\r\nlocal camera: Camera = {}\r\nlocal other = camera as Camera\r\n--[[first\r\nsecond]]\r\nreturn result";
+        let source = "local emoji = 'СЂСџв„ўвЂљ'; local value: number = 1\r\nlocal result = value as number\r\n---@class Camera\r\nlocal Camera = {}\r\nlocal camera: Camera = {}\r\nlocal other = camera as Camera\r\n--[[first\r\nsecond]]\r\nreturn result";
         let tokens = collect(source, "cua");
         let numbers: Vec<_> = tokens
             .iter()
@@ -195,6 +195,28 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(select(collect(cua, "cua")), select(collect(lua, "lua")));
+    }
+
+    #[test]
+    fn class_and_alias_tokens_match_documentation_types() {
+        let source = "alias Name = string\nclass Camera\n name: Name\n zoom?: number\nend\nlocal camera: Camera = {name = 'ok'}";
+        let tokens = collect(source, "cua");
+        for name in [
+            "class", "alias", "end", "Name", "Camera", "name", "zoom", "string", "number",
+        ] {
+            assert!(
+                tokens.iter().any(|(text, _, _)| text == name),
+                "missing {name}: {tokens:?}"
+            );
+        }
+        let types: Vec<_> = tokens
+            .iter()
+            .filter(|(text, _, _)| text == "Camera")
+            .collect();
+        assert_eq!(types.len(), 2);
+        assert!(tokens.iter().any(
+            |(text, kind, _)| text == "number" && *kind == SemanticTokenTypeKind::Type.to_u32()
+        ));
     }
 
     #[test]

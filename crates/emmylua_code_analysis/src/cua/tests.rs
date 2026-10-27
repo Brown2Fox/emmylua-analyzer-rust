@@ -200,3 +200,30 @@ fn dictionary_values_report_missing_fields_on_cua_literals() {
     );
     assert!(missing[0].message.contains("kind"));
 }
+
+#[test]
+fn native_declarations_check_fields_and_map_unknown_types() {
+    let mut analysis = EmmyLuaAnalysis::new();
+    let source = "class Params\n name: string\n optional?: number\nend\nalias Config = Params\nlocal config: Config = {}";
+    let id = analysis
+        .update_file_by_uri(&uri(), Some(source.into()))
+        .unwrap();
+    let diagnostics = errors(&analysis, id);
+    assert!(
+        diagnostics.iter().any(
+            |d| d.code == Some(NumberOrString::String("missing-fields".into()))
+                && d.range.start.line == 5
+                && d.message.contains("name")
+        ),
+        "{diagnostics:?}"
+    );
+    let source = "class Params\n value: MissingType\nend";
+    analysis.update_file_by_uri(&uri(), Some(source.into()));
+    let diagnostics = errors(&analysis, id);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.range.start == Position::new(1, 8) && d.range.end == Position::new(1, 19)),
+        "{diagnostics:?}"
+    );
+}

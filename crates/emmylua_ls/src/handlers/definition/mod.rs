@@ -350,3 +350,34 @@ mod module_member_tests {
         }
     }
 }
+
+#[test]
+fn native_class_alias_navigation() {
+    let mut analysis = EmmyLuaAnalysis::new();
+    let root = std::env::current_dir().unwrap();
+    analysis.add_main_workspace(root.clone());
+    let path = root.join("native-types.cua");
+    let uri = emmylua_code_analysis::file_path_to_uri(&path).unwrap();
+    let source = "alias Name = string\nclass Camera\n name: Name\nend\nlocal camera: Camera = {name = 'ok'}\nreturn camera.name";
+    let id = analysis
+        .update_file_by_uri(&uri, Some(source.into()))
+        .unwrap();
+    for (position, expected) in [
+        (Position::new(4, 16), Position::new(1, 6)),
+        (Position::new(2, 8), Position::new(0, 6)),
+        (Position::new(5, 15), Position::new(2, 1)),
+    ] {
+        let response = definition(&analysis, id, position).unwrap();
+        let locations = match response {
+            GotoDefinitionResponse::Scalar(location) => vec![location],
+            GotoDefinitionResponse::Array(locations) => locations,
+            other => panic!("{other:?}"),
+        };
+        assert!(
+            locations
+                .iter()
+                .any(|location| location.uri == uri && location.range.start == expected),
+            "{position:?}: {locations:?}"
+        );
+    }
+}
