@@ -438,6 +438,10 @@ fn check_against_type(
         return;
     }
     match target {
+        LuaType::Array(array) => {
+            check_container_values(context, semantic_model, array.get_base(), table);
+            return;
+        }
         LuaType::Intersection(intersection) => {
             for component in intersection.get_types() {
                 check_against_type(context, semantic_model, component, table);
@@ -445,6 +449,15 @@ fn check_against_type(
             return;
         }
         LuaType::Union(union) => {
+            let non_nil: Vec<_> = union
+                .into_vec()
+                .into_iter()
+                .filter(|ty| !matches!(ty, LuaType::Nil))
+                .collect();
+            if non_nil.len() == 1 {
+                check_against_type(context, semantic_model, &non_nil[0], table);
+                return;
+            }
             // Check the first named-class component; empty tables pass through the array component.
             let fields_count = table.get_fields_with_keys().len();
             for component in union.into_vec() {
@@ -510,6 +523,9 @@ fn check_against_type(
         && find_type_def(semantic_model, &target_id)
             .is_some_and(|def| semantic_model.is_std_file(def.file_id))
     {
+        if let Some(value_ty) = generic.get_params().get(1) {
+            check_container_values(context, semantic_model, value_ty, table);
+        }
         return;
     }
 
@@ -579,6 +595,43 @@ fn check_against_type(
                     .join(", ")
             ),
         );
+    }
+}
+
+fn check_container_values(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    target: &LuaType,
+    table: &LuaTableExpr,
+) {
+    let mut seen = HashSet::new();
+    for (field, key) in table.get_fields_with_keys().into_iter().rev() {
+        if let Some(key) = static_member_key(semantic_model, &key)
+            && !seen.insert(key)
+        {
+            continue;
+        }
+        check_nested_table(context, semantic_model, target, field.get_value_expr());
+    }
+}
+
+fn check_nested_table(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    target: &LuaType,
+    expr: Option<LuaExpr>,
+) {
+    let Some(mut expr) = expr else {
+        return;
+    };
+    while let LuaExpr::ParenExpr(paren) = &expr {
+        let Some(inner) = paren.get_expr() else {
+            return;
+        };
+        expr = inner;
+    }
+    if let LuaExpr::TableExpr(table) = expr {
+        check_against_type(context, semantic_model, target, &table);
     }
 }
 

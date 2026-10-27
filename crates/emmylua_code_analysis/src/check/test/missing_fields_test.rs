@@ -383,3 +383,50 @@ foo({})
         }
     }
 }
+
+#[test]
+fn nested_constructor_required_fields() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    for (target, value, valid) in [
+        ("table<string, ParamDef>", "{camera = {}}", false),
+        ("table<string, ParamDef>", "{[KEY] = ({})}", false),
+        ("table<string, ParamDef>", "{}", true),
+        (
+            "table<string, ParamDef>",
+            "{camera = {}, camera = {name = 'ok'}}",
+            true,
+        ),
+        (
+            "table<string, ParamDef>",
+            "{camera = {name = 'ok'}, camera = {}}",
+            false,
+        ),
+        ("table<string, ParamDef>", "{camera = {name = 'ok'}}", true),
+        ("Dictionary", "{camera = {}}", false),
+        ("table<string, ParamDef?>", "{camera = {}}", false),
+        ("table<string, ParamDef?>", "{camera = nil}", true),
+        (
+            "table<string, table<string, ParamDef>>",
+            "{group = {camera = {}}}",
+            false,
+        ),
+        ("ParamDef[]", "{{}}", false),
+        ("ParamDef[]", "{{name = 'ok'}}", true),
+    ] {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def("---@class ParamDef\n---@field name string\n---@field optional? number\n---@alias Dictionary table<string, ParamDef>\n---@class Parent\n---@field child ParamDef\nKEY = 'camera'");
+        for source in [
+            format!("---@type {target}\nlocal values = {value}"),
+            format!("---@type {target}\nlocal values\nvalues = {value}"),
+            format!(
+                "---@param values {target}\nlocal function consume(values) end\nconsume({value})"
+            ),
+        ] {
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::MissingFields, &source),
+                valid,
+                "{source}"
+            );
+        }
+    }
+}
