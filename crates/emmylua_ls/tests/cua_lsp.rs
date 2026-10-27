@@ -300,3 +300,29 @@ fn opens_changes_and_hovers_cua_over_lsp() {
     server.request("shutdown", Value::Null);
     server.send(json!({"jsonrpc":"2.0","method":"exit"}));
 }
+
+#[test]
+fn cua_argument_hints_and_usage_lenses_over_lsp() {
+    let mut server = Server::start();
+    let uri = emmylua_code_analysis::file_path_to_uri(&server.root.join("hints.cua"))
+        .unwrap()
+        .to_string();
+    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"lua","version":1,"text":"local function resizeShot(size: number) end\nresizeShot(12)\nresizeShot(24)"}}}));
+    server.wait_diagnostics(&uri, None);
+    let hints = server.request("textDocument/inlayHint", json!({"textDocument":{"uri":uri},"range":{"start":{"line":0,"character":0},"end":{"line":3,"character":0}}}));
+    assert_eq!(hints.as_array().unwrap().len(), 2, "{hints}");
+    assert_eq!(hints[0]["label"][0]["value"], "size:");
+    assert_eq!(hints[0]["position"], json!({"line":1,"character":11}));
+    let lenses = server.request("textDocument/codeLens", json!({"textDocument":{"uri":uri}}));
+    assert_eq!(lenses.as_array().unwrap().len(), 1, "{lenses}");
+    let resolved = server.request("codeLens/resolve", lenses[0].clone());
+    assert_eq!(resolved["command"]["title"], "2 usages");
+    assert_eq!(resolved["range"]["start"], json!({"line":0,"character":15}));
+    assert_eq!(
+        resolved["command"]["arguments"][2]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}

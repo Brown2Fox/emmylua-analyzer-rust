@@ -1,4 +1,4 @@
-use emmylua_code_analysis::SemanticDatabase;
+use emmylua_code_analysis::EmmyLuaAnalysis;
 use lsp_types::{CodeLens, Command, Location, Range, Uri};
 
 use crate::{
@@ -15,10 +15,11 @@ const VSCODE_COMMAND_NAME: &str = "emmy.showReferences";
 const OTHER_COMMAND_NAME: &str = "editor.action.showReferences";
 
 pub fn resolve_code_lens(
-    db: &SemanticDatabase,
+    analysis: &EmmyLuaAnalysis,
     code_lens: CodeLens,
     client_id: ClientId,
 ) -> Option<CodeLens> {
+    let db = &analysis.db;
     let data = code_lens.data.as_ref()?;
     let data = serde_json::from_value(data.clone()).ok()?;
     match data {
@@ -27,7 +28,7 @@ pub fn resolve_code_lens(
             let file_id = emmylua_code_analysis::FileId::new(data.file_id);
             let results = member_reference_ranges(db, &semantic_id, true)
                 .into_iter()
-                .filter_map(|(fid, range)| location_of(db, fid, range))
+                .filter_map(|(fid, range)| location_of(analysis, fid, range))
                 .collect::<Vec<_>>();
             let mut ref_count = results.len();
             ref_count = ref_count.saturating_sub(1);
@@ -43,9 +44,9 @@ pub fn resolve_code_lens(
         CodeLensData::DeclId(data) => {
             let semantic_id = data.to_semantic_id()?;
             let file_id = emmylua_code_analysis::FileId::new(data.file_id);
-            let results = decl_reference_ranges(db, &semantic_id, true)
+            let results = decl_reference_ranges(db, &semantic_id, false)
                 .into_iter()
-                .filter_map(|(fid, range)| location_of(db, fid, range))
+                .filter_map(|(fid, range)| location_of(analysis, fid, range))
                 .collect::<Vec<_>>();
             let ref_count = results.len();
             let uri = db.document(file_id)?.get_uri()?;
@@ -60,14 +61,19 @@ pub fn resolve_code_lens(
 }
 
 fn location_of(
-    db: &SemanticDatabase,
+    analysis: &EmmyLuaAnalysis,
     file_id: emmylua_code_analysis::FileId,
     range: rowan::TextRange,
 ) -> Option<Location> {
-    let document = db.document(file_id)?;
+    let document = analysis.db.document(file_id)?;
+    let range = document.to_lsp_range(range)?;
+    let range = match analysis.cua_document(file_id) {
+        Some(source) => source.original_range(range)?,
+        None => range,
+    };
     Some(Location {
         uri: document.get_uri()?,
-        range: document.to_lsp_range(range)?,
+        range,
     })
 }
 
