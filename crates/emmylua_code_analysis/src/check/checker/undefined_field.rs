@@ -369,7 +369,10 @@ fn key_type(semantic_model: &SemanticModel<'_>, key: &LuaIndexKey) -> LuaType {
     match key {
         LuaIndexKey::Name(_) | LuaIndexKey::String(_) => LuaType::String,
         LuaIndexKey::Integer(_) | LuaIndexKey::Idx(_) => LuaType::Integer,
-        LuaIndexKey::Expr(expr) => semantic_model.type_of_expr(expr.get_syntax_id()),
+        LuaIndexKey::Expr(expr) => {
+            let ty = semantic_model.type_of_expr(expr.get_syntax_id());
+            expand_alias_type(semantic_model, &ty).unwrap_or(ty)
+        }
     }
 }
 

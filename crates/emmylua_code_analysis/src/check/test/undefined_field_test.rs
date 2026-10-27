@@ -1302,3 +1302,22 @@ fn enum_runtime_cross_file_dynamic_and_conditional_keys() {
         eq(false)
     );
 }
+
+#[test]
+fn string_literal_alias_as_named_type_key() {
+    let diagnostics = super::check_source(
+        r#"
+---@class Values
+---@field first number
+---@field second number
+---@alias ValueKey 'first'|'second'
+---@param values Values
+---@param key ValueKey
+local function get(values, key) return values[key] end
+"#,
+    );
+    assert_eq!(
+        super::count_by_code(&diagnostics, crate::DiagnosticCode::UndefinedField),
+        0
+    );
+}
