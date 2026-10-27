@@ -142,6 +142,35 @@ mod cua_tests {
     }
 
     #[test]
+    fn open_class_hover_keeps_nested_writes_out_of_root_fields() {
+        for (ext, source, pos) in [
+            (
+                "cua",
+                "class Textures\n txHDR?: number\nend\nclass Params: table<string, any>\n textures: Textures\n shader: string\nend\nlocal p: Params = {textures = {txHDR = nil}, shader = ''}\np.textures.txHDR = nil",
+                Position::new(3, 8),
+            ),
+            (
+                "lua",
+                "---@class Textures\n---@field txHDR number?\n---@class Params: table<string, any>\n---@field textures Textures\n---@field shader string\nlocal p = {textures = {txHDR = nil}, shader = ''}\np.textures.txHDR = nil",
+                Position::new(2, 12),
+            ),
+        ] {
+            let mut analysis = EmmyLuaAnalysis::new();
+            analysis.init_std_lib(None);
+            analysis.add_main_workspace(std::path::PathBuf::from("C:/hover"));
+            let uri = lsp_types::Uri::from_str(&format!("file:///C:/hover/test.{ext}")).unwrap();
+            let id = analysis
+                .update_file_by_uri(&uri, Some(source.into()))
+                .unwrap();
+            let result = hover(&analysis, id, pos).unwrap();
+            let rendered = text(&result);
+            assert!(rendered.contains("[string]: any"), "{ext}: {rendered}");
+            assert!(rendered.contains("textures: Textures"), "{ext}: {rendered}");
+            assert!(!rendered.contains("txHDR:"), "{ext}: {rendered}");
+        }
+    }
+
+    #[test]
     fn cua_hover_maps_declarations_uses_and_inline_types() {
         let mut analysis = EmmyLuaAnalysis::new();
         let uri = lsp_types::Uri::from_str("file:///C:/test.cua").unwrap();

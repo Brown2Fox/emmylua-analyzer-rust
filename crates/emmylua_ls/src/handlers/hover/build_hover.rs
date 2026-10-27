@@ -1235,6 +1235,9 @@ fn class_member_lines(model: &SemanticModel<'_>, ty: &LuaType) -> Option<Vec<Str
 
 /// Raw key text for `@field` index signatures in class expansion (`[integer]` / `[true]` / `[nil]`).
 fn member_class_key_display(model: &SemanticModel<'_>, info: &MemberInfo) -> Option<String> {
+    if let Some(key_type) = &info.index_key_type {
+        return Some(format!("[{}]", humanize(model, key_type)));
+    }
     let id = info.id.as_ref()?;
     let range = id.member_key_range()?;
     let SemanticId::Member(key) = id else {

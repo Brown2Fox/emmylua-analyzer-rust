@@ -1055,11 +1055,53 @@ fn collect_type_def_members(
             continue;
         }
         for member_ref in owner_member_refs(model, &owner, filter) {
+            if is_nested_runtime_write(model, &member_ref) {
+                continue;
+            }
             if let Some(info) = member_info_of(model, &member_ref, bindings, name_bindings) {
                 push_member_info(out, filter, info);
             }
         }
     }
+}
+
+// Local-root member facts can share an owner for `t.x` and `t.child.x`.
+// Only direct writes contribute to the root class's member surface.
+fn is_nested_runtime_write(model: &SemanticModel<'_>, member: &MemberRef) -> bool {
+    use emmylua_parser::{LuaExpr, LuaIndexExpr};
+    let file_id = member.file_id;
+    let Some(facts) = model.file_facts_of(member.file_id) else {
+        return false;
+    };
+    let Some(member) = facts.member_by_id(&member.id) else {
+        return false;
+    };
+    if !matches!(member.owner, SemanticId::Decl(_)) {
+        return false;
+    }
+    let Some(range) = member.id.member_key_range() else {
+        return false;
+    };
+    let Some(tree) = model.syntax_tree_of(file_id) else {
+        return false;
+    };
+    let root = tree.get_red_root();
+    let Some(token) = root.token_at_offset(range.start()).right_biased() else {
+        return false;
+    };
+    let Some(index) = token.parent().and_then(LuaIndexExpr::cast) else {
+        return false;
+    };
+    let Some(mut prefix) = index.get_prefix_expr() else {
+        return false;
+    };
+    while let LuaExpr::ParenExpr(paren) = &prefix {
+        let Some(inner) = paren.get_expr() else {
+            return false;
+        };
+        prefix = inner;
+    }
+    matches!(prefix, LuaExpr::IndexExpr(_))
 }
 
 /// `---@version` visibility: the member is visible if any version condition on its closure signature matches.
