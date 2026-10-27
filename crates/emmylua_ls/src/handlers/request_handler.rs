@@ -175,6 +175,7 @@ fn unsupported_cua_request(request: &Request, has_cua: bool) -> bool {
                 | "textDocument/definition"
                 | "textDocument/typeDefinition"
                 | "textDocument/semanticTokens/full"
+                | "emmy/annotator"
         )
 }
 
@@ -209,6 +210,12 @@ mod cua_tests {
             );
             assert!(!unsupported_cua_request(&req, false));
         }
+        let annotator = Request::new(
+            1.into(),
+            "emmy/annotator".into(),
+            serde_json::json!({"uri": "file:///C:/test.cua"}),
+        );
+        assert!(!unsupported_cua_request(&annotator, false));
         let lua = Request::new(
             1.into(),
             "textDocument/rename".into(),

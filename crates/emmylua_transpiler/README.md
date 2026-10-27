@@ -87,7 +87,9 @@ built server in user or workspace settings:
 Use your own executable path. Run **EmmyLua: Restart Lua Server** after updating
 the binary. Cua uses the same semantic symbol classifications and modifiers as
 Lua; inline types after `:` and `as` share the same highlighting. Exact colors
-and decorations depend on the editor theme. Cua supports Go to Definition for
+and decorations depend on the editor theme and EmmyLua color settings.
+EmmyLua variable colors and mutable-variable underlines also apply to Cua.
+Cua supports Go to Definition for
 symbols, inline types and imports, and Go to
 Type Definition for values with named types. Targets in Lua libraries and Cua
 sources use their original source positions. Completion, find references
