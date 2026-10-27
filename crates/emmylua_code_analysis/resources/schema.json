@@ -140,6 +140,7 @@
         "docBaseConstMatchBaseType": true,
         "metaOverrideFileDefine": true,
         "noImplicitAny": false,
+        "noImplicitTable": false,
         "requirePath": false,
         "typeCall": false
       }
@@ -339,6 +340,11 @@
           "description": "Incomplete signature doc",
           "type": "string",
           "const": "incomplete-signature-doc"
+        },
+        {
+          "description": "Local table literal has no explicitly declared type",
+          "type": "string",
+          "const": "no-implicit-table"
         },
         {
           "description": "Function parameter has no declared or inferred type",
@@ -1101,6 +1107,11 @@
           "description": "meta define overrides file define",
           "type": "boolean",
           "default": true
+        },
+        "noImplicitTable": {
+          "description": "Require explicit types for local variables initialized with table literals.",
+          "default": false,
+          "type": "boolean"
         },
         "noImplicitAny": {
           "description": "Report function parameters whose type cannot be inferred or explicitly declared.",

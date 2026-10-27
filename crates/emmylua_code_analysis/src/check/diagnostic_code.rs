@@ -79,6 +79,8 @@ pub enum DiagnosticCode {
     IncompleteSignatureDoc,
     /// Function parameter has no declared or inferred type
     NoImplicitAny,
+    /// Local table literal has no explicitly declared type
+    NoImplicitTable,
     /// Unknown value used in a type-dependent operation
     UnknownOperation,
     UnknownConversion,
@@ -138,6 +140,7 @@ pub enum DiagnosticCode {
 pub fn get_default_severity(code: DiagnosticCode) -> DiagnosticSeverity {
     match code {
         DiagnosticCode::NoImplicitAny
+        | DiagnosticCode::NoImplicitTable
         | DiagnosticCode::UnknownOperation
         | DiagnosticCode::UnknownConversion => DiagnosticSeverity::ERROR,
         DiagnosticCode::SyntaxError => DiagnosticSeverity::ERROR,
@@ -172,6 +175,7 @@ pub fn is_code_default_enable(code: &DiagnosticCode, level: LuaLanguageLevel) ->
         DiagnosticCode::CodeStyleCheck => false,
         DiagnosticCode::IncompleteSignatureDoc => false,
         DiagnosticCode::NoImplicitAny
+        | DiagnosticCode::NoImplicitTable
         | DiagnosticCode::UnknownOperation
         | DiagnosticCode::UnknownConversion => false,
         DiagnosticCode::MissingGlobalDoc => false,

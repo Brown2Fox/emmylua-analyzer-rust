@@ -33,6 +33,7 @@ mod missing_fields_test;
 mod missing_parameter_test;
 mod need_check_nil_test;
 mod no_implicit_any_test;
+mod no_implicit_table_test;
 mod param_count_test;
 mod param_type_check_test;
 mod readonly_test;

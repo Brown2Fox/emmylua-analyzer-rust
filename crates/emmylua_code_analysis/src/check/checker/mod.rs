@@ -26,6 +26,7 @@ pub mod incomplete_signature_doc;
 pub mod local_const_reassign;
 pub mod need_check_nil;
 pub mod no_implicit_any;
+pub mod no_implicit_table;
 pub mod param_count;
 pub mod param_type_check;
 pub mod readonly;
@@ -202,6 +203,7 @@ pub fn check_file(semantic_model: &SemanticModel<'_>, config: Arc<CheckConfig>) 
     run_checked::<analyze_error::AnalyzeErrorChecker>(&mut context, semantic_model);
     run_checked::<unknown_operation::UnknownOperationChecker>(&mut context, semantic_model);
     run_checked::<no_implicit_any::NoImplicitAnyChecker>(&mut context, semantic_model);
+    run_checked::<no_implicit_table::NoImplicitTableChecker>(&mut context, semantic_model);
     run_checked::<unused::UnusedChecker>(&mut context, semantic_model);
     run_checked::<deprecated::DeprecatedChecker>(&mut context, semantic_model);
     run_checked::<undefined_global::UndefinedGlobal>(&mut context, semantic_model);

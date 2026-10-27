@@ -592,3 +592,24 @@ External tool object:
 - If you want stricter third-party library visibility, consider enabling `strict.requireExportGlobal`
 
 [Back to top](#emmylua-configuration-guide)
+
+### Explicit local table types
+
+`strict.noImplicitTable` (default: `false`) enables `no-implicit-table` errors
+for local variables initialized with table literals, including empty tables.
+Declare a type with `---@type`, a Cua inline annotation, or an attached
+`---@class`. Later assignments do not replace that declaration. Explicit `any`
+and `unknown` remain intentional escape hatches.
+
+```lua
+---@class LiveCameraValues
+---@field active boolean
+
+local liveCameraValues: LiveCameraValues = { active = false }
+```
+
+This initial check covers local table-literal initializers (also parenthesized).
+It does not require annotations on every nested literal, function-returned
+object, field assignment or later assignment. Required fields are checked in literal values of typed dictionaries and arrays,
+including nested containers and aliases. Existing diagnostic overrides
+and suppression apply; library and meta files remain excluded from checking.

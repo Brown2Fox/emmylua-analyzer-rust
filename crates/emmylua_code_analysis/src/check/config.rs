@@ -84,6 +84,9 @@ impl CheckConfig {
         if emmyrc.strict.no_implicit_any {
             enabled.insert(DiagnosticCode::NoImplicitAny);
         }
+        if emmyrc.strict.no_implicit_table {
+            enabled.insert(DiagnosticCode::NoImplicitTable);
+        }
         if emmyrc.strict.check_unknown {
             enabled.insert(DiagnosticCode::UnknownOperation);
             enabled.insert(DiagnosticCode::UnknownConversion);

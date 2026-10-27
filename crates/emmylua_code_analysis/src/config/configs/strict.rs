@@ -16,6 +16,9 @@ pub struct EmmyrcStrict {
     /// Report function parameters whose type cannot be inferred or explicitly declared.
     #[serde(default)]
     pub no_implicit_any: bool,
+    /// Require explicit types for local variables initialized with table literals.
+    #[serde(default)]
+    pub no_implicit_table: bool,
     /// Require narrowing unknown values before type-dependent operations and conversions to concrete types.
     #[serde(default)]
     pub check_unknown: bool,
@@ -39,6 +42,7 @@ impl Default for EmmyrcStrict {
     fn default() -> Self {
         Self {
             no_implicit_any: false,
+            no_implicit_table: false,
             check_unknown: false,
             require_path: false,
             type_call: false,
