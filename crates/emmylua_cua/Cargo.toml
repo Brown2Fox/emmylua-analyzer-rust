@@ -1,0 +1,12 @@
+[package]
+name = "emmylua_cua"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Shared Cua frontend and source mapping"
+
+[lints]
+workspace = true
+
+[dependencies]
+emmylua_parser.workspace = true

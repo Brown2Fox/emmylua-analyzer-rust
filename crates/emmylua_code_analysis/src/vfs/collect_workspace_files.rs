@@ -143,7 +143,7 @@ pub fn collect_workspace_files(
 }
 
 pub fn calculate_include_and_exclude(emmyrc: &Emmyrc) -> (Vec<String>, Vec<String>, Vec<PathBuf>) {
-    let mut include = vec!["**/*.lua".to_string()];
+    let mut include = vec!["**/*.lua".to_string(), "**/*.cua".to_string()];
     let mut exclude = Vec::new();
     let mut exclude_dirs = Vec::new();
 

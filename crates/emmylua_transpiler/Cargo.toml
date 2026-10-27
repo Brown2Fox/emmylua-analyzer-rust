@@ -1,0 +1,21 @@
+[package]
+name = "emmylua_transpiler"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Experimental typed Lua frontend and Lua emitter"
+
+[lints]
+workspace = true
+
+[dependencies]
+emmylua_cua.workspace = true
+emmylua_parser.workspace = true
+emmylua_code_analysis.workspace = true
+clap.workspace = true
+lsp_types.workspace = true
+walkdir.workspace = true
+
+[[bin]]
+name = "emmylua_compile"
+path = "src/main.rs"

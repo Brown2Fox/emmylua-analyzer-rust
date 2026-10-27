@@ -1,0 +1,6 @@
+local function zoom(amount: number): string?
+    core_camera.cameraZoom(amount)
+    return core_camera.getActiveCamName()
+end
+
+return zoom(0)

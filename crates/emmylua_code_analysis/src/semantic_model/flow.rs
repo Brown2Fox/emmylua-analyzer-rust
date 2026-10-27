@@ -1342,7 +1342,7 @@ fn apply_expr_casts_to_node(
                         continue;
                     }
                     if let Some(doc_type) = as_tag.get_type() {
-                        ty = model.doc_type_lua(doc_type.get_syntax_id());
+                        ty = model.doc_type_lua_rich(doc_type.get_syntax_id());
                     }
                 }
                 _ => {}

@@ -10,6 +10,7 @@
 
 mod check;
 mod config;
+mod cua;
 mod locale;
 mod resources;
 mod semantic_db;
@@ -34,6 +35,7 @@ pub use check::{
     CheckConfig, CheckProfile, DiagnosticCode, get_default_severity, is_code_default_enable,
 };
 pub use config::*;
+pub use cua::{CuaDocument, is_cua_uri};
 pub use locale::get_locale_code;
 use lsp_types::Uri;
 pub use resources::get_best_resources_dir;
@@ -67,6 +69,7 @@ pub fn set_locale(locale: &str) {
 
 #[derive(Debug)]
 pub struct EmmyLuaAnalysis {
+    cua_documents: std::collections::HashMap<Uri, CuaDocument>,
     pub db: SemanticDatabase,
     pub diagnostic: LuaDiagnostic,
     pub emmyrc: Arc<Emmyrc>,
@@ -78,6 +81,7 @@ impl EmmyLuaAnalysis {
         let mut db = SemanticDatabase::new();
         db.update_config(emmyrc.clone());
         Self {
+            cua_documents: Default::default(),
             db,
             diagnostic: LuaDiagnostic::new(),
             emmyrc,
@@ -130,6 +134,7 @@ impl EmmyLuaAnalysis {
     }
 
     pub fn update_file_by_uri(&mut self, uri: &Uri, text: Option<String>) -> Option<FileId> {
+        let text = self.prepare_cua(uri, text);
         let file_id = self
             .db
             .lookup_file_id(uri)
@@ -154,6 +159,13 @@ impl EmmyLuaAnalysis {
 
     pub fn update_files_by_uri(&mut self, files: Vec<(Uri, Option<String>)>) -> Vec<FileId> {
         if files.len() > 1 {
+            let files = files
+                .into_iter()
+                .map(|(uri, text)| {
+                    let text = self.prepare_cua(&uri, text);
+                    (uri, text)
+                })
+                .collect();
             let (_, file_ids) = self.db.apply_batch_with_ids(BatchChange { files });
             return file_ids;
         }
@@ -174,6 +186,7 @@ impl EmmyLuaAnalysis {
     }
 
     pub fn remove_file_by_uri(&mut self, uri: &Uri) -> Option<FileId> {
+        self.cua_documents.remove(uri);
         let file_id = self.db.lookup_file_id(uri)?;
         let _ = self.db.apply_file_change(FileChange::Remove { file_id });
         Some(file_id)
@@ -195,6 +208,25 @@ impl EmmyLuaAnalysis {
         files: Vec<(PathBuf, Option<String>)>,
         open_files: Vec<(Uri, String)>,
     ) -> Vec<Uri> {
+        self.cua_documents.clear();
+        let files = files
+            .into_iter()
+            .map(|(path, text)| {
+                let text = if let Some(uri) = file_path_to_uri(&path) {
+                    self.prepare_cua(&uri, text)
+                } else {
+                    text
+                };
+                (path, text)
+            })
+            .collect();
+        let open_files = open_files
+            .into_iter()
+            .map(|(uri, text)| {
+                let text = self.prepare_cua(&uri, Some(text)).unwrap_or_default();
+                (uri, text)
+            })
+            .collect();
         self.db.reload_workspace_files(files, open_files)
     }
 
@@ -202,6 +234,12 @@ impl EmmyLuaAnalysis {
         self.emmyrc = config.clone();
         self.diagnostic.update_config(config.clone());
         self.db.update_config(config);
+        let sources = self
+            .cua_documents
+            .iter()
+            .map(|(uri, doc)| (uri.clone(), Some(doc.source.clone())))
+            .collect();
+        self.update_files_by_uri(sources);
     }
 
     pub fn get_emmyrc(&self) -> Arc<Emmyrc> {
@@ -218,41 +256,51 @@ impl EmmyLuaAnalysis {
         file_id: FileId,
         config: Arc<CheckConfig>,
     ) -> Option<Vec<lsp_types::Diagnostic>> {
+        if let Some(error) = self
+            .cua_document(file_id)
+            .and_then(CuaDocument::error_diagnostic)
+        {
+            return Some(vec![error]);
+        }
         let model = self.semantic_model(file_id);
         let diagnostics = check::check_file(&model, config);
         let line_index = self.db.line_index(file_id)?;
         let text = self.db.get_file_text(file_id)?;
-        Some(
-            diagnostics
-                .into_iter()
-                .filter_map(|d| {
-                    let start = line_index.get_line_col(d.range.start(), text)?;
-                    let end = line_index.get_line_col(d.range.end(), text)?;
-                    Some(lsp_types::Diagnostic {
-                        range: lsp_types::Range {
-                            start: lsp_types::Position {
-                                line: start.0 as u32,
-                                character: start.1 as u32,
-                            },
-                            end: lsp_types::Position {
-                                line: end.0 as u32,
-                                character: end.1 as u32,
-                            },
+        let mut result: Vec<_> = diagnostics
+            .into_iter()
+            .filter_map(|d| {
+                let start = line_index.get_line_col(d.range.start(), text)?;
+                let end = line_index.get_line_col(d.range.end(), text)?;
+                Some(lsp_types::Diagnostic {
+                    range: lsp_types::Range {
+                        start: lsp_types::Position {
+                            line: start.0 as u32,
+                            character: start.1 as u32,
                         },
-                        severity: Some(d.severity),
-                        code: Some(lsp_types::NumberOrString::String(
-                            d.code.get_name().to_string(),
-                        )),
-                        code_description: None,
-                        source: Some("EmmyLua".to_string()),
-                        message: d.message,
-                        related_information: None,
-                        tags: d.tags,
-                        data: d.data,
-                    })
+                        end: lsp_types::Position {
+                            line: end.0 as u32,
+                            character: end.1 as u32,
+                        },
+                    },
+                    severity: Some(d.severity),
+                    code: Some(lsp_types::NumberOrString::String(
+                        d.code.get_name().to_string(),
+                    )),
+                    code_description: None,
+                    source: Some("EmmyLua".to_string()),
+                    message: d.message,
+                    related_information: None,
+                    tags: d.tags,
+                    data: d.data,
                 })
-                .collect(),
-        )
+            })
+            .collect();
+        if let Some(document) = self.cua_document(file_id) {
+            for diagnostic in &mut result {
+                diagnostic.range = document.original_range(diagnostic.range)?;
+            }
+        }
+        Some(result)
     }
 
     pub fn diagnose_file(

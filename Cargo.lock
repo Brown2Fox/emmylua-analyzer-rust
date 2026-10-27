@@ -506,6 +506,7 @@ version = "0.30.0"
 dependencies = [
  "dirs",
  "emmy_lsp_types",
+ "emmylua_cua",
  "emmylua_diagnostic_macro",
  "emmylua_parser",
  "encoding_rs",
@@ -532,6 +533,13 @@ dependencies = [
  "url",
  "walkdir",
  "wax",
+]
+
+[[package]]
+name = "emmylua_cua"
+version = "0.1.0"
+dependencies = [
+ "emmylua_parser",
 ]
 
 [[package]]
@@ -634,6 +642,18 @@ dependencies = [
  "googletest",
  "rowan",
  "unicode-general-category",
+]
+
+[[package]]
+name = "emmylua_transpiler"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "emmy_lsp_types",
+ "emmylua_code_analysis",
+ "emmylua_cua",
+ "emmylua_parser",
+ "walkdir",
 ]
 
 [[package]]

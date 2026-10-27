@@ -1585,7 +1585,7 @@ pub(crate) fn module_name_from_path(path: &Path, root: Option<&Path>) -> Option<
         None => path,
     };
     let text = rel.to_string_lossy().replace('\\', "/");
-    let text = text.strip_suffix(".lua").unwrap_or(&text);
+    let text = text.strip_suffix(".lua").or_else(|| text.strip_suffix(".cua")).unwrap_or(&text);
     let text = text.strip_suffix("/init").unwrap_or(&text);
     if text.is_empty() {
         return None;

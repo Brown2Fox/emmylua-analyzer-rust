@@ -23,7 +23,7 @@ use crate::semantic_db::def::{
     SignatureDoc,
 };
 use crate::semantic_db::types::PrimitiveType;
-use crate::semantic_model::flow::{ExprCastMode, type_of_expr_with_cast};
+use crate::semantic_model::flow::{ExprCastMode, apply_expr_casts, type_of_expr_with_cast};
 use crate::semantic_model::member::{MemberInfo, table_const_class_type, table_metatable_type};
 use crate::semantic_model::type_eval::{
     class_generic_map, eval_conditionals, expand_alias_generic, expand_alias_head,
@@ -64,6 +64,8 @@ pub enum Instr {
     PushUnknown,
     /// Reduce a multiple-value expression to its first value (nil when empty).
     AdjustToOne,
+    /// Preserve an inline assertion on a parenthesized operand.
+    ApplyAs(LuaSyntaxId),
     /// Closure reference (marks syntax for Call to back-infer params).
     PushClosure {
         syntax: LuaSyntaxId,
@@ -127,6 +129,7 @@ enum CTask {
     Expr(LuaExpr),
     Ternary,
     AdjustToOne,
+    ApplyAs(LuaSyntaxId),
     Index(IndexKey),
     Call {
         arg_count: usize,
@@ -159,6 +162,7 @@ pub fn compile(expr: LuaExpr, file_id: FileId, out: &mut Vec<Instr>) {
             CTask::Expr(expr) => compile_expr(&expr, file_id, out, &mut stack),
             CTask::Ternary => out.push(Instr::Ternary),
             CTask::AdjustToOne => out.push(Instr::AdjustToOne),
+            CTask::ApplyAs(syntax) => out.push(Instr::ApplyAs(syntax)),
             CTask::Index(key) => out.push(Instr::IndexMember(key)),
             CTask::Call {
                 arg_count,
@@ -360,6 +364,7 @@ fn compile_expr(expr: &LuaExpr, file_id: FileId, out: &mut Vec<Instr>, stack: &m
         LuaExpr::ParenExpr(paren) => {
             if let Some(inner) = paren.get_expr() {
                 stack.push(CTask::AdjustToOne);
+                stack.push(CTask::ApplyAs(inner.get_syntax_id()));
                 stack.push(CTask::Expr(inner));
             } else {
                 out.push(Instr::PushUnknown);
@@ -532,6 +537,19 @@ impl<'a> InferVm<'a> {
                 } else {
                     let value = self.index_member(owner_value, &key);
                     self.stack.push(value);
+                }
+            }
+            Instr::ApplyAs(syntax) => {
+                if let Some(value) = self.stack.last_mut() {
+                    let ty = apply_expr_casts(
+                        self.model,
+                        syntax,
+                        value.ty.clone(),
+                        ExprCastMode::AsOnly,
+                    );
+                    if ty != value.ty {
+                        *value = Value::plain(ty);
+                    }
                 }
             }
             Instr::Call {
