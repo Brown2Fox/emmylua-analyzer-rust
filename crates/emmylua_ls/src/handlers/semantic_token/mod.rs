@@ -1,4 +1,5 @@
 mod build_semantic_tokens;
+mod cua;
 mod function_string_highlight;
 mod language_injector;
 mod semantic_token_builder;
@@ -55,13 +56,19 @@ pub fn semantic_token(
     let document = analysis.db.document(file_id)?;
     let emmyrc = analysis.get_emmyrc();
 
+    let cua_document = analysis.cua_document(file_id);
     let result = build_semantic_tokens(
         &model,
         &document,
-        supports_multiline_tokens,
+        supports_multiline_tokens && cua_document.is_none(),
         client_id,
         &emmyrc,
     )?;
+
+    let result = match cua_document {
+        Some(document) => cua::map_tokens(document, result),
+        None => result,
+    };
 
     Some(SemanticTokensResult::Tokens(SemanticTokens {
         result_id: None,

@@ -7,7 +7,7 @@ use super::RegisterCapabilities;
 use crate::context::{RequestOutcome, ServerContextSnapshot, analysis_query};
 use build_hover::build_semantic_info_hover;
 use emmylua_code_analysis::{EmmyLuaAnalysis, FileId};
-use emmylua_parser::{LuaAstNode, LuaTokenKind};
+use emmylua_parser::{LuaAstNode, LuaDocType, LuaTokenKind};
 use keyword_hover::{hover_keyword, is_keyword};
 use lsp_types::{
     ClientCapabilities, Hover, HoverContents, HoverParams, HoverProviderCapability, MarkupContent,
@@ -39,6 +39,25 @@ pub async fn on_hover(
 }
 
 pub fn hover(analysis: &EmmyLuaAnalysis, file_id: FileId, position: Position) -> Option<Hover> {
+    let position = if let Some(document) = analysis.cua_document(file_id) {
+        document.generated_position(position)?
+    } else {
+        position
+    };
+    let mut result = hover_generated(analysis, file_id, position)?;
+    if let Some(document) = analysis.cua_document(file_id)
+        && let Some(range) = result.range
+    {
+        result.range = Some(document.original_range(range)?);
+    }
+    Some(result)
+}
+
+fn hover_generated(
+    analysis: &EmmyLuaAnalysis,
+    file_id: FileId,
+    position: Position,
+) -> Option<Hover> {
     if !analysis.get_emmyrc().hover.enable {
         return None;
     }
@@ -92,11 +111,112 @@ pub fn hover(analysis: &EmmyLuaAnalysis, file_id: FileId, position: Position) ->
                 range: document.to_lsp_range(literal.text_range()),
             })
         }
-        _ => build_semantic_info_hover(&model, &analysis.db, token.clone(), token.text_range()),
+        _ => build_semantic_info_hover(&model, &analysis.db, token.clone(), token.text_range())
+            .or_else(|| {
+                analysis.cua_document(file_id)?;
+                let doc_type = token.parent_ancestors().find_map(LuaDocType::cast)?;
+                let typ = model.doc_type_lua_rich(doc_type.get_syntax_id());
+                Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: lsp_types::MarkupKind::Markdown,
+                        value: format!("```lua\n{}\n```", render::humanize(&model, &typ)),
+                    }),
+                    range: document.to_lsp_range(doc_type.get_range()),
+                })
+            }),
     }
 }
 
 pub struct HoverCapabilities;
+
+#[cfg(test)]
+mod cua_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn text(hover: &Hover) -> &str {
+        match &hover.contents {
+            HoverContents::Markup(content) => &content.value,
+            _ => panic!("expected markup"),
+        }
+    }
+
+    #[test]
+    fn cua_hover_maps_declarations_uses_and_inline_types() {
+        let mut analysis = EmmyLuaAnalysis::new();
+        let uri = lsp_types::Uri::from_str("file:///C:/test.cua").unwrap();
+        let source = "local function double(value: number): number return value * 2 end\nlocal result: number = double(4)\nreturn result";
+        let id = analysis
+            .update_file_by_uri(&uri, Some(source.into()))
+            .unwrap();
+        for position in [
+            Position::new(0, 23),
+            Position::new(0, 30),
+            Position::new(0, 39),
+            Position::new(1, 8),
+            Position::new(2, 9),
+        ] {
+            let result = hover(&analysis, id, position)
+                .unwrap_or_else(|| panic!("Cua hover at {position:?}"));
+            assert!(text(&result).contains("number"), "{position:?} {result:#?}");
+            let range = result.range.unwrap();
+            assert_eq!(range.start.line, position.line, "{result:#?}");
+            assert!(
+                range.start <= position && range.end >= position,
+                "{position:?} {range:?}"
+            );
+        }
+        analysis.update_file_by_uri(&uri, Some("local value:".into()));
+        assert!(hover(&analysis, id, Position::new(0, 6)).is_none());
+        analysis.update_file_by_uri(
+            &uri,
+            Some("local value: string = 'ok'\nreturn value".into()),
+        );
+        assert!(text(&hover(&analysis, id, Position::new(1, 9)).unwrap()).contains("string"));
+    }
+
+    #[test]
+    fn cua_hover_uses_utf16_positions_after_emoji() {
+        let mut analysis = EmmyLuaAnalysis::new();
+        let uri = lsp_types::Uri::from_str("file:///C:/test.cua").unwrap();
+        let source = "local value: number = 1\nlocal s = '🙂'; print(value)";
+        let id = analysis
+            .update_file_by_uri(&uri, Some(source.into()))
+            .unwrap();
+        let result = hover(&analysis, id, Position::new(1, 22)).unwrap();
+        assert!(text(&result).contains("number"));
+        assert_eq!(
+            result.range.unwrap(),
+            lsp_types::Range::new(Position::new(1, 22), Position::new(1, 27))
+        );
+    }
+
+    #[test]
+    fn cua_inline_type_hover_reads_emmylua_libraries() {
+        let mut analysis = EmmyLuaAnalysis::new();
+        let library = lsp_types::Uri::from_str("file:///C:/sdk.d.lua").unwrap();
+        analysis.update_file_by_uri(
+            &library,
+            Some("---@meta\n---@class Camera\n---@field zoom number\nlocal Camera = {}".into()),
+        );
+        let uri = lsp_types::Uri::from_str("file:///C:/test.cua").unwrap();
+        let id = analysis
+            .update_file_by_uri(
+                &uri,
+                Some("local camera: Camera = {}\nreturn camera".into()),
+            )
+            .unwrap();
+        let result = hover(&analysis, id, Position::new(0, 16)).unwrap();
+        assert!(
+            text(&result).contains("Camera") && text(&result).contains("zoom"),
+            "{result:#?}"
+        );
+        assert_eq!(
+            result.range.unwrap(),
+            lsp_types::Range::new(Position::new(0, 14), Position::new(0, 20))
+        );
+    }
+}
 
 impl RegisterCapabilities for HoverCapabilities {
     fn register_capabilities(server_capabilities: &mut ServerCapabilities, _: &ClientCapabilities) {

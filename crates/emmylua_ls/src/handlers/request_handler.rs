@@ -7,11 +7,11 @@ use lsp_types::request::{
     CodeActionRequest, CodeLensRequest, CodeLensResolve, ColorPresentationRequest, Completion,
     DocumentColor, DocumentDiagnosticRequest, DocumentHighlightRequest, DocumentLinkRequest,
     DocumentLinkResolve, DocumentSymbolRequest, ExecuteCommand, FoldingRangeRequest, Formatting,
-    GotoDefinition, GotoImplementation, HoverRequest, InlayHintRequest, InlayHintResolveRequest,
-    InlineValueRequest, OnTypeFormatting, PrepareRenameRequest, RangeFormatting, References,
-    Rename, Request as LspRequest, ResolveCompletionItem, SelectionRangeRequest,
-    SemanticTokensFullRequest, SignatureHelpRequest, WorkspaceDiagnosticRequest,
-    WorkspaceSymbolRequest,
+    GotoDefinition, GotoImplementation, GotoTypeDefinition, HoverRequest, InlayHintRequest,
+    InlayHintResolveRequest, InlineValueRequest, OnTypeFormatting, PrepareRenameRequest,
+    RangeFormatting, References, Rename, Request as LspRequest, ResolveCompletionItem,
+    SelectionRangeRequest, SemanticTokensFullRequest, SignatureHelpRequest,
+    WorkspaceDiagnosticRequest, WorkspaceSymbolRequest,
 };
 
 use crate::{
@@ -35,7 +35,7 @@ use super::{
     code_lens::{on_code_lens_handler, on_resolve_code_lens_handler},
     command::on_execute_command_handler,
     completion::{on_completion_handler, on_completion_resolve_handler},
-    definition::on_goto_definition_handler,
+    definition::{on_goto_definition_handler, on_type_definition_handler},
     document_color::{on_document_color, on_document_color_presentation},
     document_formatting::on_formatting_handler,
     document_highlight::on_document_highlight_handler,
@@ -89,6 +89,24 @@ pub async fn on_request_handler(
     req: Request,
     server_context: &mut ServerContext,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
+    // Only diagnostic and hover ranges are mapped back to Cua in this stage.
+    // Other providers must not expose edits or positions in generated Lua.
+    let has_cua = if matches!(
+        req.method.as_str(),
+        "textDocument/rename" | "textDocument/prepareRename" | "workspace/symbol"
+    ) {
+        server_context
+            .snapshot()
+            .analysis()
+            .with_snapshot(|analysis| analysis.has_cua_documents())
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    if unsupported_cua_request(&req, has_cua) {
+        server_context.send(Response::new_ok(req.id, serde_json::Value::Null));
+        return Ok(());
+    }
     dispatch_request!(req, server_context, {
         HoverRequest => on_hover,
         DocumentSymbolRequest => on_document_symbol,
@@ -107,6 +125,7 @@ pub async fn on_request_handler(
         InlayHintRequest => on_inlay_hint_handler,
         InlayHintResolveRequest => on_resolve_inlay_hint,
         GotoDefinition => on_goto_definition_handler,
+        GotoTypeDefinition => on_type_definition_handler,
         GotoImplementation => on_implementation_handler,
         References => on_references_handler,
         Rename => on_rename_handler,
@@ -131,4 +150,71 @@ pub async fn on_request_handler(
     });
 
     Ok(())
+}
+
+fn unsupported_cua_request(request: &Request, has_cua: bool) -> bool {
+    if has_cua
+        && matches!(
+            request.method.as_str(),
+            "textDocument/rename" | "textDocument/prepareRename" | "workspace/symbol"
+        )
+    {
+        return true;
+    }
+    let uri = request
+        .params
+        .pointer("/textDocument/uri")
+        .or_else(|| request.params.get("uri"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|uri| uri.parse::<lsp_types::Uri>().ok());
+    uri.as_ref().is_some_and(emmylua_code_analysis::is_cua_uri)
+        && !matches!(
+            request.method.as_str(),
+            "textDocument/hover"
+                | "textDocument/diagnostic"
+                | "textDocument/definition"
+                | "textDocument/typeDefinition"
+                | "textDocument/semanticTokens/full"
+        )
+}
+
+#[cfg(test)]
+mod cua_tests {
+    use super::*;
+    #[test]
+    fn cua_requests_cannot_edit_generated_lua() {
+        for method in [
+            "textDocument/formatting",
+            "textDocument/rename",
+            "textDocument/completion",
+        ] {
+            let req = Request::new(
+                1.into(),
+                method.into(),
+                serde_json::json!({"textDocument": {"uri": "file:///C:/test.cua"}}),
+            );
+            assert!(unsupported_cua_request(&req, false));
+        }
+        for method in [
+            "textDocument/hover",
+            "textDocument/diagnostic",
+            "textDocument/definition",
+            "textDocument/typeDefinition",
+            "textDocument/semanticTokens/full",
+        ] {
+            let req = Request::new(
+                1.into(),
+                method.into(),
+                serde_json::json!({"textDocument": {"uri": "file:///C:/test.cua"}}),
+            );
+            assert!(!unsupported_cua_request(&req, false));
+        }
+        let lua = Request::new(
+            1.into(),
+            "textDocument/rename".into(),
+            serde_json::json!({"textDocument": {"uri": "file:///C:/test.lua"}}),
+        );
+        assert!(!unsupported_cua_request(&lua, false));
+        assert!(unsupported_cua_request(&lua, true));
+    }
 }
