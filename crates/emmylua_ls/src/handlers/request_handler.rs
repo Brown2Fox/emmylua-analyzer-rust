@@ -176,6 +176,7 @@ fn unsupported_cua_request(request: &Request, has_cua: bool) -> bool {
                 | "textDocument/typeDefinition"
                 | "textDocument/semanticTokens/full"
                 | "emmy/annotator"
+                | "textDocument/inlayHint"
         )
 }
 
@@ -202,6 +203,7 @@ mod cua_tests {
             "textDocument/definition",
             "textDocument/typeDefinition",
             "textDocument/semanticTokens/full",
+            "textDocument/inlayHint",
         ] {
             let req = Request::new(
                 1.into(),

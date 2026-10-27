@@ -92,7 +92,9 @@ EmmyLua variable colors and mutable-variable underlines also apply to Cua.
 Cua supports Go to Definition for
 symbols, inline types and imports, and Go to
 Type Definition for values with named types. Targets in Lua libraries and Cua
-sources use their original source positions. Completion, find references
+sources use their original source positions. Parameter name hints
+are available with positions mapped to the original source.
+Completion, find references
 and formatting are not enabled yet. Rename and workspace
 symbol search are also disabled in mixed Lua/Cua workspaces until their
 cross-file ranges support Cua; generated Lua positions must never become edits

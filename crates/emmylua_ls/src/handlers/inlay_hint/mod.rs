@@ -43,7 +43,36 @@ pub fn inlay_hint(
     let model = analysis.semantic_model(file_id);
     let enum_param_hint = analysis.get_emmyrc().hint.enum_param_hint;
 
-    build_inlay_hints(&model, &analysis.db, client_id, enum_param_hint)
+    let hints = build_inlay_hints(&model, &analysis.db, client_id, enum_param_hint)?;
+    Some(
+        hints
+            .into_iter()
+            .filter_map(|mut hint| {
+                if let Some(source) = analysis.cua_document(file_id) {
+                    // Inline type annotations already display the types in Cua.
+                    if hint.kind != Some(lsp_types::InlayHintKind::PARAMETER) {
+                        return None;
+                    }
+                    hint.position = source
+                        .original_range(lsp_types::Range::new(hint.position, hint.position))?
+                        .start;
+                }
+                if let lsp_types::InlayHintLabel::LabelParts(parts) = &mut hint.label {
+                    for part in parts {
+                        if let Some(location) = &mut part.location {
+                            if let Some(source) = analysis
+                                .get_file_id(&location.uri)
+                                .and_then(|id| analysis.cua_document(id))
+                            {
+                                location.range = source.original_range(location.range)?;
+                            }
+                        }
+                    }
+                }
+                Some(hint)
+            })
+            .collect(),
+    )
 }
 
 #[allow(unused_variables)]
