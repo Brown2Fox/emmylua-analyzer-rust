@@ -16,6 +16,7 @@ struct Server {
     messages: Receiver<Value>,
     root: PathBuf,
     next_id: u64,
+    diagnostic_refreshes: usize,
 }
 
 impl Server {
@@ -87,9 +88,10 @@ impl Server {
             messages,
             root,
             next_id: 1,
+            diagnostic_refreshes: 0,
         };
         let root_uri = emmylua_code_analysis::file_path_to_uri(&server.root).unwrap();
-        server.request("initialize", json!({"processId":null,"rootUri":root_uri.as_str(),"workspaceFolders":[{"uri":root_uri.as_str(),"name":"cua"}],"capabilities":{"textDocument":{"diagnostic":{}},"workspace":{"configuration":true}}}));
+        server.request("initialize", json!({"processId":null,"rootUri":root_uri.as_str(),"workspaceFolders":[{"uri":root_uri.as_str(),"name":"cua"}],"capabilities":{"textDocument":{"diagnostic":{}},"workspace":{"configuration":true,"diagnostics":{"refreshSupport":true}}}}));
         server.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
         server
     }
@@ -113,6 +115,9 @@ impl Server {
                 .recv_timeout(remaining)
                 .expect("language server response");
             if message.get("method").is_some() && message.get("id").is_some() {
+                if message["method"] == "workspace/diagnostic/refresh" {
+                    self.diagnostic_refreshes += 1;
+                }
                 let result = if message["method"] == "workspace/configuration" {
                     Value::Array(
                         message["params"]["items"]
@@ -325,4 +330,34 @@ fn cua_argument_hints_and_usage_lenses_over_lsp() {
             .len(),
         2
     );
+}
+
+#[test]
+fn renaming_export_refreshes_diagnostics_in_unchanged_caller() {
+    for ext in ["lua", "cua"] {
+        let mut server = Server::start();
+        let module_uri =
+            emmylua_code_analysis::file_path_to_uri(&server.root.join(format!("input.{ext}")))
+                .unwrap()
+                .to_string();
+        let caller_uri =
+            emmylua_code_analysis::file_path_to_uri(&server.root.join(format!("main.{ext}")))
+                .unwrap()
+                .to_string();
+        let module = "---@class InputModule\nlocal M = {}\nfunction M.setSettings() end\nreturn M";
+        let caller = "local Input = require('input')\nInput.setSettings()";
+        for (uri, source) in [(&module_uri, module), (&caller_uri, caller)] {
+            server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"lua","version":1,"text":source}}}));
+        }
+        server.wait_diagnostics(&caller_uri, None);
+        let before = server.diagnostic_refreshes;
+        server.send(json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":module_uri,"version":2},"contentChanges":[{"text":module.replace("setSettings", "dependOn")}]}}));
+        server.wait_diagnostics(&caller_uri, Some("undefined-field"));
+        assert!(
+            server.diagnostic_refreshes > before,
+            "{ext}: missing refresh request"
+        );
+        server.send(json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":module_uri,"version":3},"contentChanges":[{"text":module}]}}));
+        server.wait_diagnostics(&caller_uri, None);
+    }
 }

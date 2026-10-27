@@ -175,6 +175,10 @@ pub async fn process_did_change_text_document(
         }
     }
 
+    if supports_pull && context.lsp_features().supports_refresh_diagnostic() {
+        context.client().refresh_workspace_diagnostics();
+    }
+
     Some(())
 }
 
