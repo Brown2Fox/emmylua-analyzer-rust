@@ -310,3 +310,43 @@ fn native_class_binds_its_explicit_runtime_implementation() {
         diagnostics(source, "")
     );
 }
+
+#[test]
+fn unparenthesized_return_lists_match_parenthesized_lists() {
+    for types in [
+        "number, number",
+        "number, string?",
+        "table<string, number>, boolean",
+    ] {
+        let body = if types.starts_with("table") {
+            "return {}, true"
+        } else if types.contains("string") {
+            "return 1, nil"
+        } else {
+            "return 1, 2"
+        };
+        let plain = format!("local function values(): {types}\n {body}\nend\nreturn values()");
+        let grouped = format!("local function values(): ({types})\n {body}\nend\nreturn values()");
+        for source in [plain, grouped] {
+            let output = compile(&source);
+            assert!(output.analysis_lua.contains(&format!("---@return {types}")));
+            assert!(output.lua.contains(body));
+            assert_eq!(output.lua.len(), source.len());
+            assert!(
+                diagnostics(&source, "").is_empty(),
+                "{:?}",
+                diagnostics(&source, "")
+            );
+            let start = source.find(types).unwrap();
+            for offset in start..start + types.len() {
+                assert_eq!(
+                    output.original_offset(output.generated_offset(offset)),
+                    offset
+                );
+            }
+        }
+    }
+    let source = "local function values(): number, number return 1, 'bad' end";
+    assert!(!diagnostics(source, "").is_empty());
+    assert!(transpile("local function f(): number,\nend", LuaLanguageLevel::Lua51).is_err());
+}

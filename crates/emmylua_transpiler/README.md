@@ -74,7 +74,7 @@ navigation to their original declarations.
 - Local variable types: `local value: number = 1`.
 - Fully annotated multiple locals: `local x: number, y: string = 1, "a"`.
 - Parameters of named functions and methods, including `...: number`.
-- Single return types and parenthesized return lists.
+- Single return types and comma-separated return lists, with optional parentheses.
 - Expression assertions: `value as Type`, with parentheses for subsequent field access or calls.
 - EmmyLua type expressions, including `Camera?`, unions, arrays, object shapes,
   `table<string, Camera?>` and `fun(x: number): string`.

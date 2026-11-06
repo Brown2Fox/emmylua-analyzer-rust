@@ -635,7 +635,7 @@ impl Frontend<'_> {
                 returns.push(ty);
                 i = next;
                 end = type_end;
-                if !tuple || self.kind(i) != K::TkComma {
+                if self.kind(i) != K::TkComma {
                     break;
                 }
                 i += 1;
