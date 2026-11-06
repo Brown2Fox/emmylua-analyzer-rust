@@ -1,3 +1,16 @@
+## Main differences in this fork
+
+This experimental fork extends [EmmyLua Analyzer Rust](https://github.com/EmmyLuaLs/emmylua-analyzer-rust) with stricter type checking and Cua (Cats + Lua), a typed Lua syntax.
+
+- **Opt-in strict checks:** `strict.noImplicitAny` reports function parameters without a declared or inferred type. `strict.checkUnknown` requires narrowing `unknown` before type-dependent operations or implicit conversion to a concrete type.
+- **Stricter table contracts:** support for `(exact)` classes, required fields in nested table literals, and additional fixes for aliases, index signatures and type narrowing.
+- **Cua (`.cua`):** inline variable, parameter and return types, `class` and `alias` declarations, and `as` type assertions. `emmylua_compile` checks these files and emits ordinary Lua, using existing EmmyLua / LuaCATS annotations and type libraries.
+- **Cua editor support:** diagnostics, semantic highlighting, navigation to symbols and types, argument inlay hints and usage counts through the language server.
+
+See the [strict-check configuration](docs/config/emmyrc_json_EN.md#strict) and [Cua guide](crates/emmylua_transpiler/README.md). The installation links below refer to upstream; build this fork to use its additions.
+
+---
+
 <div align="center">
 
 # EmmyLua Analyzer Rust
