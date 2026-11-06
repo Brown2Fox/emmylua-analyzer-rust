@@ -539,6 +539,7 @@ fn add_comment_scope_members(builder: &mut CompletionBuilder, seen: &mut HashSet
                 continue;
             }
             let info = emmylua_code_analysis::MemberInfo {
+                index_key_type: None,
                 key: LuaMemberKey::Name(label.clone().into()),
                 typ: ty.clone(),
                 id: None,

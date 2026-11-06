@@ -18,6 +18,7 @@ use crate::semantic_model::render::humanize_type;
 pub struct AssignTypeMismatchChecker;
 
 pub(super) struct TypeMismatch {
+    pub(super) code: DiagnosticCode,
     pub(super) range: rowan::TextRange,
     pub(super) message: String,
 }
@@ -136,53 +137,6 @@ fn str_tpl_uses_name(ty: &LuaType, name: &str) -> bool {
             .iter()
             .any(|component| str_tpl_uses_name(component, name)),
         _ => false,
-    }
-}
-
-/// Table literals in call arguments: check each field against the callee parameter type (`f({ t = "" })`).
-fn check_call_args(
-    context: &mut CheckContext<'_>,
-    semantic_model: &SemanticModel<'_>,
-    call: &LuaCallExpr,
-) {
-    if call.get_prefix_expr().is_none() {
-        return;
-    }
-    let analysis = semantic_model.call_site_analysis(call);
-    let candidates = analysis.candidates;
-    if candidates.is_empty() {
-        return;
-    }
-    let Some(args) = call.get_args_list() else {
-        return;
-    };
-    for candidate in &candidates {
-        let params = candidate.get_params();
-        for (index, arg) in args.get_args().enumerate() {
-            let Some((_, Some(param_ty))) = params.get(index) else {
-                break;
-            };
-            if !matches!(arg, LuaExpr::TableExpr(_)) {
-                continue;
-            }
-            let LuaExpr::TableExpr(table) = arg else {
-                continue;
-            };
-            if is_structured_table_target(semantic_model, param_ty) {
-                let mut fields = CheckContext::new(semantic_model, context.config.clone());
-                check_table_fields(&mut fields, semantic_model, param_ty, &table);
-                for diagnostic in fields.into_diagnostics() {
-                    // Unknown conversions belong to the overload-aware parameter checker.
-                    if diagnostic.code != DiagnosticCode::UnknownConversion {
-                        context.add_diagnostic(
-                            diagnostic.code,
-                            diagnostic.range,
-                            diagnostic.message,
-                        );
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -546,11 +500,42 @@ fn check_value_against(
     target: &LuaType,
     value_expr: &LuaExpr,
 ) {
+    let mut mismatches = Vec::new();
+    collect_value_mismatches(&mut mismatches, semantic_model, target, value_expr);
+    for mismatch in mismatches {
+        context.add_diagnostic(mismatch.code, mismatch.range, mismatch.message);
+    }
+}
+
+fn collect_unknown_conversion(
+    mismatches: &mut Vec<TypeMismatch>,
+    model: &SemanticModel<'_>,
+    source: &LuaType,
+    target: &LuaType,
+    range: rowan::TextRange,
+) -> bool {
+    if !crate::semantic_model::type_check::rejects_unknown_conversion(model, source, target) {
+        return false;
+    }
+    mismatches.push(TypeMismatch {
+        code: DiagnosticCode::UnknownConversion,
+        range,
+        message: super::unknown_conversion::message(model, source, target),
+    });
+    true
+}
+
+fn collect_value_mismatches(
+    mismatches: &mut Vec<TypeMismatch>,
+    semantic_model: &SemanticModel<'_>,
+    target: &LuaType,
+    value_expr: &LuaExpr,
+) {
     let conversion_type = assignment_value_type(semantic_model, value_expr)
         .get_result_slot_type(0)
         .unwrap_or(LuaType::Nil);
-    if super::unknown_conversion::report(
-        context,
+    if collect_unknown_conversion(
+        mismatches,
         semantic_model,
         &conversion_type,
         target,
@@ -849,8 +834,8 @@ fn collect_table_value_mismatches(
     }
     let value_ty =
         semantic_model.type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start());
-    if super::unknown_conversion::report(
-        context,
+    if collect_unknown_conversion(
+        mismatches,
         semantic_model,
         &value_ty,
         expected,
@@ -874,6 +859,9 @@ fn collect_table_value_mismatches(
 }
 
 pub(super) fn index_key_type(semantic_model: &SemanticModel<'_>, key: &LuaIndexKey) -> LuaType {
+    if let Some(key) = static_member_key(semantic_model, key).and_then(|key| key.to_index_type()) {
+        return key;
+    }
     match key {
         LuaIndexKey::Name(_) | LuaIndexKey::String(_) => LuaType::String,
         LuaIndexKey::Integer(token) => match token.get_number_value() {
@@ -1010,33 +998,8 @@ fn type_mismatch(
         ),
     };
     TypeMismatch {
+        code: DiagnosticCode::AssignTypeMismatch,
         range,
         message: message.into_owned(),
     }
-}
-
-/// Field conversions for one parameter candidate; the caller chooses the overload.
-pub(super) fn table_unknown_conversion(
-    model: &SemanticModel<'_>,
-    target: &LuaType,
-    table: &LuaTableExpr,
-) -> Option<super::Diagnostic> {
-    let config = model.db().config_input()?;
-    if !config.strict.check_unknown
-        && !config
-            .diagnostics
-            .enables
-            .contains(&DiagnosticCode::UnknownConversion)
-    {
-        return None;
-    }
-    let mut context = CheckContext::new(
-        model,
-        std::sync::Arc::new(crate::check::CheckConfig::new(config)),
-    );
-    check_table_fields(&mut context, model, target, table);
-    context
-        .into_diagnostics()
-        .into_iter()
-        .find(|diagnostic| diagnostic.code == DiagnosticCode::UnknownConversion)
 }

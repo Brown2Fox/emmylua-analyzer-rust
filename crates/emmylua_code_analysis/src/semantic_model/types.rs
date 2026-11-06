@@ -249,6 +249,9 @@ impl<'db> SemanticModel<'db> {
             // `---@class Foo` / `---@enum Foo` + `x = {}`: associate the runtime variable following the comment
             // with the type definition even if the variable name differs from the class name. Semantically that runtime table is the class table.
             if let Some(owner_syntax) = decl.owner_syntax
+                && decl
+                    .value_expr_syntax
+                    .is_none_or(|syntax| syntax.get_kind() != LuaSyntaxKind::ClosureExpr)
                 && let Some(facts) = self.file_facts()
                 && let Some(def) = facts
                     .type_def_by_owner_syntax(owner_syntax)
@@ -575,20 +578,16 @@ impl<'db> SemanticModel<'db> {
         // do not need global pairs/ipairs signatures; infer directly from the type definition.
         if let LuaType::Ref(id) | LuaType::Def(id) = &arg_ty {
             if name.as_str() != "ipairs" {
-                let members = member::member_infos_all(self, arg_ty);
-                let indexed: Vec<_> = members
-                    .iter()
-                    .filter(|m| m.index_key_type.is_some())
-                    .collect();
+                let indexed = self.index_infos(arg_ty);
                 if !indexed.is_empty() {
                     return Some(LuaType::from_vec(
                         indexed
                             .into_iter()
                             .map(|m| {
                                 if index == 0 {
-                                    m.index_key_type.clone().unwrap()
+                                    m.key_type.clone()
                                 } else {
-                                    m.typ.clone()
+                                    m.value_type.clone()
                                 }
                             })
                             .collect(),

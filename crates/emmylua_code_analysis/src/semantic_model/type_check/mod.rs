@@ -89,7 +89,7 @@ pub(crate) fn rejects_unknown_conversion(
     source: &LuaType,
     target: &LuaType,
 ) -> bool {
-    let enabled = model.db().config_input().is_some_and(|config| {
+    let enabled = model.db().config().is_some_and(|config| {
         config.strict.check_unknown
             || config
                 .diagnostics

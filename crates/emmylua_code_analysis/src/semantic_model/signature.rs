@@ -827,10 +827,47 @@ impl<'db> SemanticModel<'db> {
         };
         // `L.out.to = function(line)` / `function L.out.to(line)`: the member is flattened onto `L`,
         // but its field is declared on `L.out`.
-        let owner_ty = self
-            .nested_member_prefix(closure_syntax)
-            .and_then(|prefix| self.declared_path_type(&prefix))
-            .unwrap_or(owner_ty);
+        let owner_ty = (|| {
+            let range = member.id.member_key_range()?;
+            let tree = self.syntax_tree_of(member_file)?;
+            let root = tree.get_red_root();
+            let token = root.token_at_offset(range.start()).right_biased()?;
+            let index = token.parent().and_then(LuaIndexExpr::cast)?;
+            let prefix = index.get_prefix_expr()?;
+            if !matches!(prefix, LuaExpr::IndexExpr(_)) {
+                return None;
+            }
+            fn declared_path(model: &SemanticModel<'_>, expr: &LuaExpr) -> Option<LuaType> {
+                match expr {
+                    LuaExpr::NameExpr(name) => {
+                        model.type_of_decl(&model.resolve_name(name.get_position())?)
+                    }
+                    LuaExpr::IndexExpr(index) => {
+                        let owner = declared_path(model, &index.get_prefix_expr()?)?;
+                        let key = match index.get_index_key()? {
+                            emmylua_parser::LuaIndexKey::Name(token) => {
+                                LuaMemberKey::Name(token.get_name_text().into())
+                            }
+                            emmylua_parser::LuaIndexKey::String(token) => {
+                                LuaMemberKey::Name(token.get_value().into())
+                            }
+                            emmylua_parser::LuaIndexKey::Integer(token) => {
+                                match token.get_number_value() {
+                                    NumberResult::Int(value) => LuaMemberKey::Integer(value),
+                                    _ => return None,
+                                }
+                            }
+                            _ => return None,
+                        };
+                        model.member_type(&owner, &key)
+                    }
+                    LuaExpr::ParenExpr(paren) => declared_path(model, &paren.get_expr()?),
+                    _ => None,
+                }
+            }
+            declared_path(self, &prefix)
+        })()
+        .unwrap_or(owner_ty);
 
         let infos = member::member_infos_with_key_all(self, &owner_ty, &key);
         let mut out = Vec::new();

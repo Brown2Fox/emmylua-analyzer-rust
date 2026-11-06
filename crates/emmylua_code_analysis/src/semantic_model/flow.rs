@@ -1990,39 +1990,50 @@ fn known_assignment_fallback(ty: &LuaType) -> bool {
     }
 }
 
-/// After backtracking reaches the start, expand the assignment frames on the explicit stack in earliest-to-latest order.
-fn finish_decl_frames(
+/// Deferred flow effects and cache writes, applied while unwinding the trace.
+enum DeclTraceFrame {
+    Assignment(DeclAssignmentFrame),
+    /// Evaluate the common predecessor before expanding a loop-free join.
+    Branch(FlowAntecedent),
+    /// Filter original signatures before saving the result for this node.
+    FilterSignatures(Vec<CastOp>),
+    Memo {
+        key: cache::TraceStateKey,
+        revision: u64,
+    },
+}
+
+/// Evaluate one assignment after its predecessor type is known. Both linear
+/// frames and assignments at joins use the same coercion and reachability rules.
+fn apply_decl_assignment(
     model: &SemanticModel,
     decl: &SemanticId,
     tree: &FlowTree,
     frame: DeclAssignmentFrame,
     narrowed_before: LuaType,
     mode: TraceMode,
-) -> Option<LuaType> {
-    let mut frames = frames;
-    while let Some(frame) = frames.pop() {
-        let narrowed_before = result;
-        let value_ty = assigned_value_type(
-            model,
-            tree,
-            decl,
-            frame.flow_id,
-            frame.assign_pos,
-            frame.value_syntax,
-            &narrowed_before,
-        );
-        let value_ty = coerce_table_assign_to_narrowed(
-            model,
-            decl,
-            value_ty,
-            &narrowed_before,
-            &frame.base_before,
-        );
-        let value_ty = if value_ty.is_unknown() && known_assignment_fallback(&narrowed_before) {
-            widen_const_type(narrowed_before.clone())
-        } else {
-            value_ty
-        };
+) -> ControlFlow<LuaType, LuaType> {
+    let value_ty = assigned_value_type(
+        model,
+        tree,
+        decl,
+        frame.flow_id,
+        frame.assign_pos,
+        frame.value_syntax,
+        &narrowed_before,
+    );
+    let value_ty = coerce_table_assign_to_narrowed(
+        model,
+        decl,
+        value_ty,
+        &narrowed_before,
+        &frame.base_before,
+    );
+    let value_ty = if value_ty.is_unknown() && known_assignment_fallback(&narrowed_before) {
+        widen_const_type(narrowed_before.clone())
+    } else {
+        value_ty
+    };
     let assign_result = finalize(model, value_ty, &frame.assign_path);
     // When branch-merge backtracking reaches an assignment node, the assignment may itself be in an unreachable branch
     // (e.g. `if always_false() then x = 1 end`). In that case the assignment does not participate in merging;
@@ -2144,9 +2155,13 @@ fn trace_decl(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
-    // Scalar guard chains share trace states to avoid exponential backtracking.
-    // Member predicates depend on the incoming path and must not reuse a state
-    // computed for another field guard. Loops also keep their uncached path.
+    // On a loop-free graph every route to a flow node crosses the same guards, so
+    // a state's value depends on the node and the purpose alone — never on the
+    // route. That makes the state cacheable, which matters because a nested
+    // conditional chain otherwise re-derives the same states along exponentially
+    // many routes. Only nodes that can reach a loop backwards keep the uncached
+    // path (see the type note on `cache::TraceStateKey`), so a loop in one function
+    // does not disable memoization for the rest of the file.
     if tree.is_loop_reachable(flow_id)
         || path.narrowings.iter().any(|n| {
             matches!(
@@ -2155,7 +2170,7 @@ fn trace_decl(
             )
         })
     {
-        return trace_decl_uncached(model, decl, tree, flow_id, options, mode, visited, path);
+        return trace_decl_uncached(model, decl, tree, flow_id, purpose, mode, visited, path);
     }
     let key = decl_trace_key(model, decl, flow_id, purpose, mode);
     {
@@ -2302,33 +2317,9 @@ fn trace_decl_uncached(
                                 &mut before_visited,
                                 &mut before_path,
                             )
-                            .unwrap_or_else(|| finalize(model, base_before.clone(), path));
-                            let value_ty = assigned_value_type(
-                                model,
-                                tree,
-                                decl,
-                                current,
-                                assign_pos,
-                                *value_syntax,
-                                &narrowed_before,
-                            );
-                            let value_ty = coerce_table_assign_to_narrowed(
-                                model,
-                                decl,
-                                value_ty,
-                                &narrowed_before,
-                                &base_before,
-                            );
-                            let value_ty = if value_ty.is_unknown()
-                                && known_assignment_fallback(&narrowed_before)
-                            {
-                                widen_const_type(narrowed_before.clone())
-                            } else {
-                                value_ty
-                            };
-                            let result = finalize(model, value_ty, &assign_path);
-                            if mode == TraceMode::MergeBranch
-                                && !assignment_antecedent_reachable(
+                            .unwrap_or_else(|| finalize(model, frame.base_before.clone(), path));
+                            let (ControlFlow::Break(result) | ControlFlow::Continue(result)) =
+                                apply_decl_assignment(
                                     model,
                                     decl,
                                     tree,
@@ -5888,7 +5879,7 @@ fn walk_decl(
                     }
                     merged = Some(match merged {
                         None => branch_ty,
-                        Some(previous) if options.assignments => {
+                        Some(previous) if matches!(purpose, DeclTracePurpose::ReadValue) => {
                             if model.type_of_decl(decl).is_some_and(|ty| ty.is_unknown())
                                 && model
                                     .file_facts()
@@ -5902,6 +5893,16 @@ fn walk_decl(
                             } else {
                                 merge_types(previous, branch_ty)
                             }
+                        }
+                        Some(previous)
+                            if matches!(purpose, DeclTracePurpose::OriginalSignatures(_)) =>
+                        {
+                            LuaType::from_vec(vec![previous, branch_ty])
+                        }
+                        Some(previous)
+                            if matches!(purpose, DeclTracePurpose::OriginalSignatures(_)) =>
+                        {
+                            LuaType::from_vec(vec![previous, branch_ty])
                         }
                         Some(previous) => intersect_types(previous, branch_ty),
                     });

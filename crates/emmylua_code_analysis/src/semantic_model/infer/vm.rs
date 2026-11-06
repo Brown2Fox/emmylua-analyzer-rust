@@ -3345,6 +3345,7 @@ fn constructor_candidate(
                 .into_iter()
                 .find(|member| member.name == attribute.name)
                 .map(|member| MemberInfo {
+                    index_key_type: None,
                     key: key.clone(),
                     typ: model.type_of_member(&member.id).unwrap_or(LuaType::Unknown),
                     id: Some(member.id.clone()),

@@ -1211,6 +1211,9 @@ fn class_member_lines(model: &SemanticModel<'_>, ty: &LuaType) -> Option<Vec<Str
         .member_infos(ty)
         .into_iter()
         .filter_map(|info| {
+            if info.index_key_type.is_some() {
+                return None;
+            }
             let name = match &info.key {
                 LuaMemberKey::Name(name) => name.to_string(),
                 LuaMemberKey::Integer(i) => format!("[{}]", i),
@@ -1223,22 +1226,16 @@ fn class_member_lines(model: &SemanticModel<'_>, ty: &LuaType) -> Option<Vec<Str
             Some(format!("    {}: {},", name, rendered))
         })
         .collect::<Vec<_>>();
-    Some(lines)
-}
-
-/// Raw key text for `@field` index signatures in class expansion (`[integer]` / `[true]` / `[nil]`).
-fn member_class_key_display(model: &SemanticModel<'_>, info: &MemberInfo) -> Option<String> {
-    if let Some(key_type) = &info.index_key_type {
-        return Some(format!("[{}]", humanize(model, key_type)));
-    }
-    let id = info.id.as_ref()?;
-    let range = id.member_key_range()?;
-    let SemanticId::Member(key) = id else {
-        return None;
-    };
-    let member = model.file_facts_of(key.file_id)?.member_by_id(id)?;
-    if !member.is_index_signature {
-        return None;
+    for info in model.index_infos(ty) {
+        if matches!(info.key_type, LuaType::Nil) {
+            continue;
+        }
+        let key = humanize(model, &info.key_type);
+        let value = match &info.value_type {
+            LuaType::DocFunction(_) => "function".to_string(),
+            ty => render_member_typ_with_default(model, ty),
+        };
+        lines.push(format!("    [{key}]: {value},"));
     }
     Some(lines)
 }

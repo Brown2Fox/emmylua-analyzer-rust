@@ -263,6 +263,7 @@ fn doc_generic_keyof_member_infos(
         .into_iter()
         .filter_map(|info| match info.key {
             LuaMemberKey::Name(name) => Some(MemberInfo {
+                index_key_type: None,
                 key: LuaMemberKey::Name(name),
                 typ: LuaType::Unknown,
                 id: None,
@@ -296,6 +297,7 @@ fn generic_keyof_member_infos(
         .into_iter()
         .filter_map(|info| match info.key {
             LuaMemberKey::Name(name) => Some(MemberInfo {
+                index_key_type: None,
                 key: LuaMemberKey::Name(name),
                 typ: LuaType::Unknown,
                 id: None,
@@ -368,6 +370,7 @@ fn associated_type_member_infos(
             }
             seen_keys.push(key.clone());
             out.push(MemberInfo {
+                index_key_type: None,
                 key,
                 typ: model.type_of_member(&member.id).unwrap_or(LuaType::Unknown),
                 id: Some(member.id.clone()),

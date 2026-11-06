@@ -203,20 +203,20 @@ fn check_exact_key(
     key: &LuaIndexKey,
     fallback_range: rowan::TextRange,
 ) {
-    let mut fields = HashMap::new();
-    let mut signatures = Vec::new();
-    collect_fields(
-        semantic_model,
-        &def.id,
-        &mut Vec::new(),
-        &mut fields,
-        &mut signatures,
-    );
-    collect_object_super_fields(semantic_model, def, &mut fields);
-    if static_member_key(semantic_model, key).is_some_and(|key| fields.contains_key(&key))
-        || signatures
-            .iter()
-            .any(|signature| signature_matches_key(semantic_model, signature, key))
+    let target = semantic_model.type_def_ref(def);
+    if static_member_key(semantic_model, key).is_some_and(|key| {
+        semantic_model.member_infos(&target).iter().any(|info| {
+            info.key == key
+                && info.id.as_ref().is_some_and(|id| {
+                    info.file_id
+                        .and_then(|file| semantic_model.file_facts_of(file))
+                        .and_then(|facts| facts.member_by_id(id))
+                        .is_some_and(|member| matches!(member.owner, SemanticId::TypeDef(_)))
+                })
+        })
+    }) || semantic_model
+        .applicable_index_infos(&target, &index_key_type(semantic_model, key))
+        .is_ok_and(|infos| !infos.is_empty())
     {
         return;
     }

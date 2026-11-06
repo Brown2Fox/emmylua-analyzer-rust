@@ -23,6 +23,8 @@ const MAX_MEMBER_INHERITANCE_DEPTH: usize = 100;
 /// Member information (an entry from a prefix-type query).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemberInfo {
+    /// Declared index domain; absent for ordinary members.
+    pub index_key_type: Option<LuaType>,
     /// Member key.
     pub key: LuaMemberKey,
     /// Member type (after projection / generic substitution).
@@ -282,6 +284,7 @@ fn direct_member_info(
             None
         }
         LuaType::Object(object) => object.get_fields().get(key).cloned().map(|typ| MemberInfo {
+            index_key_type: None,
             key: key.clone(),
             typ,
             id: None,
@@ -328,6 +331,7 @@ pub(crate) fn member_info_impl(
             LuaType::Never
         };
         return Some(MemberInfo {
+            index_key_type: None,
             key: key.clone(),
             typ,
             id: first.as_ref().and_then(|info| info.id.clone()),
@@ -353,6 +357,7 @@ pub(crate) fn member_info_impl(
         }
     {
         return Some(MemberInfo {
+            index_key_type: None,
             key: key.clone(),
             typ: ret,
             id: None,
@@ -395,6 +400,11 @@ fn index_value_type_inner(
         LuaType::Generic(generic) => model.type_def_of(&generic.get_base_type_id()),
         _ => None,
     };
+    // Unbound names in generic alias syntax have no index domain yet.
+    // Querying their indexes would mark an otherwise deferred computation incomplete.
+    if definition.is_none() && matches!(owner, LuaType::Ref(_) | LuaType::Def(_)) {
+        return None;
+    }
     if definition.is_some_and(|def| def.kind == TypeDefKind::Alias) {
         return with_expanded_alias(model, owner, |expanded| {
             index_value_type_inner(model, expanded, key, visited)
@@ -439,14 +449,11 @@ fn index_value_type_inner(
                 (!values.is_empty()).then(|| LuaType::from_vec(values))
             }
             LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_) => {
-                let values: Vec<_> = member_infos_all(model, &expanded)
+                let values: Vec<_> = model
+                    .applicable_index_infos(&expanded, key)
+                    .ok()?
                     .into_iter()
-                    .filter(|info| {
-                        info.index_key_type
-                            .as_ref()
-                            .is_some_and(|domain| model.type_check_subtype(key, domain))
-                    })
-                    .map(|info| info.typ)
+                    .map(|info| info.value_type)
                     .collect();
                 (!values.is_empty()).then(|| LuaType::from_vec(values))
             }
@@ -843,6 +850,7 @@ fn collect_members(
                     out,
                     filter,
                     MemberInfo {
+                        index_key_type: None,
                         key: key.clone(),
                         typ: ty.clone(),
                         id: None,
@@ -961,6 +969,7 @@ fn expand_table_multi_return_member(
             .into_iter()
             .enumerate()
             .map(|(index, ty)| MemberInfo {
+                index_key_type: None,
                 key: LuaMemberKey::Integer(start + index as i64),
                 typ: ty,
                 id: None,
@@ -1153,6 +1162,7 @@ fn member_info_of(
     let typ = projected_member_type(model, member_ref, member, bindings, name_bindings)?;
 
     Some(MemberInfo {
+        index_key_type: None,
         key: member.key.clone(),
         typ,
         id: Some(member.id.clone()),

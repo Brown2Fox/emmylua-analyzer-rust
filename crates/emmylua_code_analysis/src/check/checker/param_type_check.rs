@@ -32,6 +32,7 @@ pub struct ParamTypeChecker;
 impl Checker for ParamTypeChecker {
     const CODES: &[DiagnosticCode] = &[
         DiagnosticCode::ParamTypeMismatch,
+        DiagnosticCode::AssignTypeMismatch,
         DiagnosticCode::UnknownConversion,
     ];
 
@@ -344,16 +345,17 @@ fn check_call(
     if let Some(mismatches) = best {
         let literal_names = doc_overload_literal_names(semantic_model, &callee);
         for mismatch in mismatches {
-            let message = if literal_names.len() >= 2 {
-                let found = mismatch
-                    .message
-                    .split_once("but found")
-                    .map(|(_, found)| format!("but found{found}"))
-                    .unwrap_or_else(|| mismatch.message.clone());
-                format!("expected `{}` {found}", literal_names.join(" | "))
-            } else {
-                mismatch.message
-            };
+            let message =
+                if mismatch.code == DiagnosticCode::ParamTypeMismatch && literal_names.len() >= 2 {
+                    let found = mismatch
+                        .message
+                        .split_once("but found")
+                        .map(|(_, found)| format!("but found{found}"))
+                        .unwrap_or_else(|| mismatch.message.clone());
+                    format!("expected `{}` {found}", literal_names.join(" | "))
+                } else {
+                    mismatch.message
+                };
             context.add_diagnostic(mismatch.code, mismatch.range, message);
         }
     }
@@ -689,7 +691,7 @@ fn table_field_mismatches(
     super::assign_type_mismatch::table_field_mismatches(semantic_model, param_ty, table)
         .into_iter()
         .map(|mismatch| Mismatch {
-            code: DiagnosticCode::AssignTypeMismatch,
+            code: mismatch.code,
             range: mismatch.range,
             message: mismatch.message,
         })
@@ -782,6 +784,7 @@ fn check_arg_pairs(
                             out.push(mismatch);
                             continue;
                         }
+                        out.extend(table_field_mismatches(semantic_model, &slot_ty, arg));
                         if arg_ty == slot_ty || is_compatible(semantic_model, &arg_ty, &slot_ty) {
                             continue;
                         }
@@ -870,6 +873,7 @@ fn check_arg_pairs(
         }
         // Table literals targeting object / intersection: check field by field and then fully take over.
         if let LuaExpr::TableExpr(table) = arg {
+            out.extend(table_field_mismatches(semantic_model, &param_ty, arg));
             let table_params = match &param_ty {
                 LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
                     Some(generic.get_params().as_slice())
@@ -905,18 +909,6 @@ fn check_arg_pairs(
                 if invalid {
                     continue;
                 }
-            }
-            if let Some(diagnostic) = super::assign_type_mismatch::table_unknown_conversion(
-                semantic_model,
-                &param_ty,
-                table,
-            ) {
-                out.push(Mismatch {
-                    code: diagnostic.code,
-                    range: diagnostic.range,
-                    message: diagnostic.message,
-                });
-                continue;
             }
             if has_table_literal_shape(&param_ty) {
                 if let Some(mismatch) = table_literal_mismatch(semantic_model, &param_ty, table) {
