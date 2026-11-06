@@ -10,7 +10,7 @@ use crate::WorkspaceId;
 use crate::semantic_db::SemanticDatabase;
 use crate::semantic_db::def::{DeclKind, SemanticId, TypeDef, TypeScope, TypeVisibility};
 use crate::semantic_db::exports::FileExports;
-use crate::semantic_db::query::{file_facts, file_matches_workspace_id};
+use crate::semantic_db::query::file_matches_workspace_id;
 
 /// Workspace type index: plain `(scope, full_name)` -> all type definitions.
 ///
@@ -163,17 +163,14 @@ pub(crate) struct DeprecatedFileData {
 
 pub(crate) fn build_deprecated_file(db: &SemanticDatabase, file_id: FileId) -> DeprecatedFileData {
     let mut data = DeprecatedFileData::default();
-    let Some(file) = db.file_data_id(file_id) else {
-        return data;
-    };
-    let facts = file_facts(db, file);
+    let facts = db.file_facts_of(file_id).expect("file facts must exist");
     for decl in &facts.decls {
         if matches!(decl.kind, DeclKind::Global) && decl.deprecated {
             data.names.push(decl.name.clone());
         }
     }
     for member in &facts.members {
-        if member.deprecated {
+        if member.deprecated && member.index_key_syntax.is_none() {
             let key: SmolStr = member.key.to_path().into();
             data.member_keys.push((member.owner.clone(), key));
         }

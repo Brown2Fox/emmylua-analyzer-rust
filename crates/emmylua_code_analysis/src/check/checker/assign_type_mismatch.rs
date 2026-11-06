@@ -17,6 +17,11 @@ use crate::semantic_model::render::humanize_type;
 
 pub struct AssignTypeMismatchChecker;
 
+pub(super) struct TypeMismatch {
+    pub(super) range: rowan::TextRange,
+    pub(super) message: String,
+}
+
 impl Checker for AssignTypeMismatchChecker {
     const CODES: &[DiagnosticCode] = &[
         DiagnosticCode::AssignTypeMismatch,
@@ -35,7 +40,6 @@ impl Checker for AssignTypeMismatchChecker {
                 LuaAst::LuaTableExpr(table) => {
                     check_inline_table_fields(context, semantic_model, &table)
                 }
-                LuaAst::LuaCallExpr(call) => check_call_args(context, semantic_model, &call),
                 _ => {}
             }
         }
@@ -568,7 +572,7 @@ fn check_value_against(
             return;
         }
         if is_structured_table_target(semantic_model, target) {
-            check_table_fields(context, semantic_model, target, table);
+            collect_table_field_mismatches(mismatches, semantic_model, target, table);
         } else {
             let value_ty = semantic_model
                 .type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start());
@@ -582,7 +586,12 @@ fn check_value_against(
             {
                 return;
             }
-            add_mismatch(context, value_expr.get_range(), target, &value_ty);
+            mismatches.push(type_mismatch(
+                semantic_model,
+                value_expr.get_range(),
+                target,
+                &value_ty,
+            ));
         }
         return;
     }
@@ -592,7 +601,12 @@ fn check_value_against(
     {
         return;
     }
-    add_mismatch(context, value_expr.get_range(), target, &value_ty);
+    mismatches.push(type_mismatch(
+        semantic_model,
+        value_expr.get_range(),
+        target,
+        &value_ty,
+    ));
 }
 
 /// Assignment RHS type: when VM yields `Function`, if the RHS is a named function, resolve its cross-file signature structure.
@@ -640,8 +654,21 @@ fn resolve_unbound_generic(semantic_model: &SemanticModel<'_>, ty: LuaType) -> L
     ty
 }
 
-fn check_table_fields(
-    context: &mut CheckContext<'_>,
+/// Let argument checking collect field errors after it substitutes call generics.
+pub(super) fn table_field_mismatches(
+    semantic_model: &SemanticModel<'_>,
+    target: &LuaType,
+    table: &LuaTableExpr,
+) -> Vec<TypeMismatch> {
+    let mut mismatches = Vec::new();
+    if is_structured_table_target(semantic_model, target) {
+        collect_table_field_mismatches(&mut mismatches, semantic_model, target, table);
+    }
+    mismatches
+}
+
+fn collect_table_field_mismatches(
+    mismatches: &mut Vec<TypeMismatch>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
     table: &LuaTableExpr,
@@ -650,7 +677,7 @@ fn check_table_fields(
     if let LuaType::Union(union) = target {
         for component in union.into_vec().iter() {
             if is_structured_table_target(semantic_model, component) {
-                check_table_fields(context, semantic_model, component, table);
+                collect_table_field_mismatches(mismatches, semantic_model, component, table);
                 return;
             }
         }
@@ -662,7 +689,7 @@ fn check_table_fields(
             let Some(value_expr) = field.get_value_expr() else {
                 continue;
             };
-            check_table_value(context, semantic_model, &value_expr, expected);
+            collect_table_value_mismatches(mismatches, semantic_model, &value_expr, expected);
         }
         return;
     }
@@ -675,7 +702,7 @@ fn check_table_fields(
             let Some(value_expr) = field.get_value_expr() else {
                 continue;
             };
-            check_table_value(context, semantic_model, &value_expr, expected);
+            collect_table_value_mismatches(mismatches, semantic_model, &value_expr, expected);
         }
         return;
     }
@@ -690,16 +717,19 @@ fn check_table_fields(
                 .as_ref()
                 .and_then(|key| object.get_fields().get(key))
             {
-                check_table_value(context, semantic_model, &value_expr, expected);
+                collect_table_value_mismatches(mismatches, semantic_model, &value_expr, expected);
                 continue;
             }
             let key_ty = index_key_type(semantic_model, &key);
-            if let Some((_, expected)) = object
-                .get_index_access()
-                .iter()
-                .find(|(signature_key, _)| is_compatible(semantic_model, &key_ty, signature_key))
+            if let Ok(infos) = semantic_model.applicable_index_infos(target, &key_ty)
+                && let Some(info) = infos.first()
             {
-                check_table_value(context, semantic_model, &value_expr, expected);
+                collect_table_value_mismatches(
+                    mismatches,
+                    semantic_model,
+                    &value_expr,
+                    &info.value_type,
+                );
             }
         }
         return;
@@ -712,24 +742,30 @@ fn check_table_fields(
         && let Some(alias_target) = semantic_model.alias_target(&def)
         && is_structured_table_target(semantic_model, &alias_target)
     {
-        check_table_fields(context, semantic_model, &alias_target, table);
+        collect_table_field_mismatches(mismatches, semantic_model, &alias_target, table);
         return;
     }
 
-    let Some(target_def) = named_def(semantic_model, target) else {
+    if named_def(semantic_model, target).is_none() {
         return;
-    };
+    }
     let mut members = HashMap::new();
     let mut required_members: Vec<(String, LuaType)> = Vec::new();
-    let mut index_signatures: Vec<(String, LuaType)> = Vec::new();
-    collect_members_with_index_signatures(
-        semantic_model,
-        &target_def,
-        &mut Vec::new(),
-        &mut members,
-        &mut required_members,
-        &mut index_signatures,
-    );
+    for info in semantic_model.member_infos(target) {
+        let declaration = info.id.as_ref().and_then(|id| {
+            semantic_model
+                .file_facts_of(info.file_id?)
+                .and_then(|facts| facts.member_by_id(id))
+        });
+        if declaration.is_some_and(|member| !matches!(member.owner, SemanticId::TypeDef(_))) {
+            continue;
+        }
+        let required = declaration.is_some_and(|member| !member.is_nullable);
+        if required {
+            required_members.push((info.key.to_path(), info.typ.clone()));
+        }
+        members.insert(info.key, info.typ);
+    }
     let fields: Vec<_> = table
         .get_fields_with_keys()
         .into_iter()
@@ -746,20 +782,23 @@ fn check_table_fields(
             let Some(value_expr) = field.get_value_expr() else {
                 continue;
             };
-            check_table_value(context, semantic_model, &value_expr, expected);
+            collect_table_value_mismatches(mismatches, semantic_model, &value_expr, expected);
             continue;
         }
         // Static member not found -> check against index signatures (`@field [integer] string`).
-        let Some((_, expected)) = index_signatures
-            .iter()
-            .find(|(signature, _)| signature_matches_key(semantic_model, signature, key))
+        let Ok(infos) =
+            semantic_model.applicable_index_infos(target, &index_key_type(semantic_model, key))
         else {
             continue;
         };
+        let Some(info) = infos.first() else {
+            continue;
+        };
+        let expected = &info.value_type;
         let Some(value_expr) = field.get_value_expr() else {
             continue;
         };
-        check_table_value(context, semantic_model, &value_expr, expected);
+        collect_table_value_mismatches(mismatches, semantic_model, &value_expr, expected);
     }
     // Array-shaped table literal + integer index signature: required static members from class inheritance must still appear
     // (an Opts with `@field [integer] string` still requires the parent's `@field foo boolean`).
@@ -785,7 +824,12 @@ fn check_table_fields(
                         value_expr.get_syntax_id(),
                         value_expr.get_range().start(),
                     );
-                    add_mismatch(context, value_expr.get_range(), required_ty, &value_ty);
+                    mismatches.push(type_mismatch(
+                        semantic_model,
+                        value_expr.get_range(),
+                        required_ty,
+                        &value_ty,
+                    ));
                 }
                 break;
             }
@@ -793,14 +837,14 @@ fn check_table_fields(
     }
 }
 
-fn check_table_value(
-    context: &mut CheckContext<'_>,
+fn collect_table_value_mismatches(
+    mismatches: &mut Vec<TypeMismatch>,
     semantic_model: &SemanticModel<'_>,
     value_expr: &LuaExpr,
     expected: &LuaType,
 ) {
     if matches!(value_expr, LuaExpr::TableExpr(_)) {
-        check_value_against(context, semantic_model, expected, value_expr);
+        collect_value_mismatches(mismatches, semantic_model, expected, value_expr);
         return;
     }
     let value_ty =
@@ -821,13 +865,24 @@ fn check_table_value(
     {
         return;
     }
-    add_mismatch(context, value_expr.get_range(), expected, &value_ty);
+    mismatches.push(type_mismatch(
+        semantic_model,
+        value_expr.get_range(),
+        expected,
+        &value_ty,
+    ));
 }
 
 pub(super) fn index_key_type(semantic_model: &SemanticModel<'_>, key: &LuaIndexKey) -> LuaType {
     match key {
         LuaIndexKey::Name(_) | LuaIndexKey::String(_) => LuaType::String,
-        LuaIndexKey::Integer(_) | LuaIndexKey::Idx(_) => LuaType::Integer,
+        LuaIndexKey::Integer(token) => match token.get_number_value() {
+            NumberResult::Float(value) => LuaType::FloatConst(value),
+            NumberResult::Int(value) => LuaType::IntegerConst(value),
+            NumberResult::Uint(value) => LuaType::FloatConst(value as f64),
+            NumberResult::Number => LuaType::Number,
+        },
+        LuaIndexKey::Idx(value) => LuaType::IntegerConst(*value as i64),
         LuaIndexKey::Expr(expr) => semantic_model.type_of_expr(expr.get_syntax_id()),
     }
 }
@@ -857,72 +912,6 @@ fn index_key_to_member_key(
             }
         }
         LuaIndexKey::Expr(_) => None,
-    }
-}
-
-pub(super) fn signature_matches_key(
-    semantic_model: &SemanticModel<'_>,
-    signature: &str,
-    key: &LuaIndexKey,
-) -> bool {
-    let key_ty = index_key_type(semantic_model, key);
-    match signature {
-        "integer" | "number" | "int" => {
-            matches!(key, LuaIndexKey::Integer(_) | LuaIndexKey::Idx(_))
-                || is_compatible(semantic_model, &key_ty, &LuaType::Integer)
-        }
-        "string" => matches!(key, LuaIndexKey::Name(_) | LuaIndexKey::String(_)),
-        "any" | "unknown" => true,
-        _ => false,
-    }
-}
-
-fn collect_members_with_index_signatures(
-    semantic_model: &SemanticModel<'_>,
-    def: &TypeDef,
-    visited: &mut Vec<SemanticId>,
-    out: &mut HashMap<LuaMemberKey, LuaType>,
-    required_out: &mut Vec<(String, LuaType)>,
-    index_signatures: &mut Vec<(String, LuaType)>,
-) {
-    if visited.contains(&def.id) {
-        return;
-    }
-    visited.push(def.id.clone());
-    for member_ref in semantic_model.members_of_owner(&def.id).iter() {
-        let Some(member_file_facts) = semantic_model.file_facts_of(member_ref.file_id) else {
-            continue;
-        };
-        let Some(member) = member_file_facts.member_by_id(&member_ref.id) else {
-            continue;
-        };
-        let name = member_ref.name.to_string();
-        let ty = semantic_model
-            .type_of_member(&member_ref.id)
-            .unwrap_or(LuaType::Unknown);
-        if member.is_index_signature {
-            if !index_signatures
-                .iter()
-                .any(|(existing, _)| existing == &name)
-            {
-                index_signatures.push((name, ty));
-            }
-        } else {
-            out.entry(member.key.clone()).or_insert_with(|| ty.clone());
-            if !member.is_nullable && !required_out.iter().any(|(existing, _)| existing == &name) {
-                required_out.push((name, ty));
-            }
-        }
-    }
-    for super_def in semantic_model.base_type_defs(&def.type_decl_id()) {
-        collect_members_with_index_signatures(
-            semantic_model,
-            &super_def,
-            visited,
-            out,
-            required_out,
-            index_signatures,
-        );
     }
 }
 
@@ -989,24 +978,41 @@ fn add_mismatch(
     target: &LuaType,
     value_ty: &LuaType,
 ) {
-    let reason = match check_type_detail(context.semantic_model, value_ty, target) {
+    let mismatch = type_mismatch(context.semantic_model, range, target, value_ty);
+    context.add_diagnostic(
+        DiagnosticCode::AssignTypeMismatch,
+        mismatch.range,
+        mismatch.message,
+    );
+}
+
+fn type_mismatch(
+    semantic_model: &SemanticModel<'_>,
+    range: rowan::TextRange,
+    target: &LuaType,
+    value_ty: &LuaType,
+) -> TypeMismatch {
+    let reason = match check_type_detail(semantic_model, value_ty, target) {
         Err(TypeCheckFailReason::TypeNotMatchWithReason(reason)) => Some(reason),
         _ => None,
     };
     let message = match reason {
         Some(reason) => t!(
             "expected `%{target}` but found `%{value}`.\n  %{reason}",
-            target = humanize_type(context.semantic_model, target),
-            value = humanize_type(context.semantic_model, value_ty),
+            target = humanize_type(semantic_model, target),
+            value = humanize_type(semantic_model, value_ty),
             reason = reason
         ),
         None => t!(
             "expected `%{target}` but found `%{value}`",
-            target = humanize_type(context.semantic_model, target),
-            value = humanize_type(context.semantic_model, value_ty)
+            target = humanize_type(semantic_model, target),
+            value = humanize_type(semantic_model, value_ty)
         ),
     };
-    context.add_diagnostic(DiagnosticCode::AssignTypeMismatch, range, message);
+    TypeMismatch {
+        range,
+        message: message.into_owned(),
+    }
 }
 
 /// Field conversions for one parameter candidate; the caller chooses the overload.

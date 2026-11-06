@@ -25,7 +25,7 @@ use crate::{Emmyrc, FileId};
 
 use super::SemanticDatabase;
 use super::facts::FileFacts;
-use super::query::{self, file_facts};
+use super::query::{self};
 
 /// Export contribution visible from a single file.
 ///
@@ -135,6 +135,9 @@ pub struct MemberExport {
     /// Canonical owner identity used by the incremental workspace-index layer.
     pub owner_id: OwnerId,
     pub key: LuaMemberKey,
+    // used for incremental updates.
+    pub index_key_syntax: Option<LuaSyntaxId>,
+    pub index_key_text: Option<SmolStr>,
     pub member: SemanticId,
     /// Initializer expression / closure syntax (`None` for pure `@field` docs).
     pub value_syntax: Option<LuaSyntaxId>,
@@ -158,6 +161,8 @@ impl MemberExport {
             && self.owner == other.owner
             && self.owner_id == other.owner_id
             && self.key == other.key
+            && self.index_key_syntax == other.index_key_syntax
+            && self.index_key_text == other.index_key_text
             && self.member == other.member
             && self.is_method == other.is_method
             && self.visibility == other.visibility
@@ -195,17 +200,12 @@ pub(crate) fn owner_id_from_semantic_id(facts: &FileFacts, owner: &SemanticId) -
     }
 }
 
-/// Per-file export contribution (collects identities only, no type precomputation).
-pub(crate) fn file_exports(db: &SemanticDatabase, file: FileId) -> &FileExportContribution {
-    db.file_exports_of(file)
-}
-
 pub(super) fn build_file_exports(
     db: &SemanticDatabase,
     file: FileId,
     file_id: FileId,
 ) -> FileExportContribution {
-    let facts = file_facts(db, file);
+    let facts = db.file_facts_of(file).expect("file facts must exist");
     let aliases = build_require_alias_contributions(db, file_id);
 
     let types = facts.type_defs.clone();
@@ -230,6 +230,12 @@ pub(super) fn build_file_exports(
             owner: member.owner.clone(),
             owner_id: canonical_member_owner_id(facts, file_id, &member.owner, &aliases),
             key: member.key.clone(),
+            index_key_syntax: member.index_key_syntax,
+            index_key_text: member.index_key_syntax.and_then(|syntax| {
+                syntax
+                    .to_node_from_root(&db.syntax_tree_of(file_id)?.get_red_root())
+                    .map(|node| node.text().to_string().into())
+            }),
             member: member.id.clone(),
             value_syntax: member.value_syntax,
             is_method: member.is_method,
@@ -307,17 +313,14 @@ pub(crate) fn build_require_alias_contributions(
     db: &SemanticDatabase,
     file_id: FileId,
 ) -> Vec<RequireAliasContribution> {
-    let Some(config) = db.config_input() else {
+    let Some(config) = db.config() else {
         return Vec::new();
     };
-    let Some(file) = db.file_data_id(file_id) else {
-        return Vec::new();
-    };
-    let facts = file_facts(db, file);
+    let facts = db.file_facts_of(file_id).expect("file facts must exist");
     if facts.decls.is_empty() {
         return Vec::new();
     }
-    let Some(tree) = db.vfs().get_syntax_tree(&file_id) else {
+    let Some(tree) = db.syntax_tree_of(file_id) else {
         return Vec::new();
     };
     let root = tree.get_red_root();

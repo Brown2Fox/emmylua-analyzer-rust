@@ -44,9 +44,15 @@ use super::overload::{
 use super::unify;
 use crate::semantic_model::SemanticModel;
 use crate::{
-    GenericParam, LuaAliasCallType, LuaConditionalType, LuaInstanceType, LuaIntersectionType,
-    LuaMappedType, LuaMultiLineUnion,
+    LuaAliasCallType, LuaConditionalType, LuaInstanceType, LuaIntersectionType, LuaMappedType,
+    LuaMultiLineUnion,
 };
+
+/// Signatures from one function definition, before candidate ordering or flow filtering.
+pub(crate) struct SignatureProjection {
+    pub(crate) main: Option<LuaFunctionType>,
+    pub(crate) overloads: Vec<LuaFunctionType>,
+}
 
 /// The operand determines both the index metadata and the stack shape.
 #[derive(Debug, Clone)]
@@ -2595,14 +2601,6 @@ impl<'a> InferVm<'a> {
         self.model.constructor_attribute_of_type(&def.id)
     }
 
-    /// Cross-file callable candidate projection for an owner identity.
-    pub(crate) fn callable_candidates_for_owner(
-        &self,
-        owner: &SemanticId,
-    ) -> Option<Vec<LuaFunctionType>> {
-        self.signature_candidates(owner)
-    }
-
     /// Single-identity candidate projection (no cross-file global expansion).
     pub(crate) fn callable_candidates_for_owner_single(
         &self,
@@ -2640,27 +2638,16 @@ impl<'a> InferVm<'a> {
 
     /// Single-identity signature projection: main signature + `---@overload`.
     fn signature_candidates_single(&self, owner: &SemanticId) -> Option<Vec<LuaFunctionType>> {
-        let (file_id, value_syntax, overload_syntaxes) = match owner {
+        let (file_id, value_syntax) = match owner {
             SemanticId::Decl(key) => {
                 let facts = self.model.file_facts_of(key.file_id)?;
                 let decl = facts.decl_by_id(owner)?;
-                let overloads = facts
-                    .signature_by_closure(decl.value_expr_syntax?)
-                    .and_then(|sig| sig.docs.as_ref())
-                    .map(|docs| docs.overloads.clone())
-                    .unwrap_or_default();
-                (key.file_id, decl.value_expr_syntax?, overloads)
+                (key.file_id, decl.value_expr_syntax?)
             }
             SemanticId::Member(key) => {
                 let facts = self.model.file_facts_of(key.file_id)?;
                 let member = facts.member_by_id(owner)?;
-                let mut overload_syntaxes: Vec<LuaSyntaxId> = Vec::new();
-                if let Some(signature) = facts.signature_by_closure(member.value_syntax?)
-                    && let Some(docs) = signature.docs.as_ref()
-                {
-                    overload_syntaxes = docs.overloads.clone();
-                }
-                (key.file_id, member.value_syntax?, overload_syntaxes)
+                (key.file_id, member.value_syntax?)
             }
             SemanticId::Name(name) => {
                 // Cross-file global overloads: a global call owns `Name("f")`, but
@@ -2695,21 +2682,32 @@ impl<'a> InferVm<'a> {
             }
             return None;
         }
-        let docs = signature.docs.as_ref()?;
-        let generic_params = docs.generic_params.clone();
+        let projection = self.signature_projection(file_id, signature)?;
+        let mut out = projection.overloads;
+        out.extend(projection.main);
+        Some(out)
+    }
 
-        let mut out = Vec::new();
-        for overload_syntax in &overload_syntaxes {
+    /// Project one definition, keeping its main signature separate from overloads.
+    pub(crate) fn signature_projection(
+        &self,
+        file_id: FileId,
+        signature: &Signature,
+    ) -> Option<SignatureProjection> {
+        let docs = signature.docs.as_ref()?;
+        let generic_params = &docs.generic_params;
+        let mut overloads = Vec::new();
+        for overload_syntax in &docs.overloads {
             if let Some(fun) =
-                self.doc_func_from_syntax(file_id, *overload_syntax, &generic_params, false)
+                self.doc_func_from_syntax(file_id, *overload_syntax, generic_params, false)
             {
-                out.push(fun);
+                overloads.push(fun);
             }
         }
-        if let Some(main_fun) = self.main_signature_function(file_id, signature, &generic_params) {
-            out.push(main_fun);
-        }
-        Some(out)
+        Some(SignatureProjection {
+            main: self.main_signature_function(file_id, signature, generic_params),
+            overloads,
+        })
     }
 
     /// Build `GenericTpl`s with default/constraint metadata from `DocGenericParam`.
@@ -3352,7 +3350,6 @@ fn constructor_candidate(
                     id: Some(member.id.clone()),
                     file_id: Some(member.file_id),
                     is_method: true,
-                    index_key_type: None,
                 })
         })?;
     let member_file = member_info.file_id?;
@@ -3955,6 +3952,11 @@ pub(crate) fn unify_call_bindings(
             }
         }
         DocFunction(param_fun) => {
+            let expanded_arg = match arg {
+                Ref(_) | Def(_) | Generic(_) => expand_alias_head(model, arg),
+                _ => None,
+            };
+            let arg = expanded_arg.as_ref().unwrap_or(arg);
             if let DocFunction(arg_fun) = arg {
                 let param_params = param_fun.get_params();
                 let arg_params = arg_fun.get_params();
@@ -4004,14 +4006,29 @@ pub(crate) fn unify_call_bindings(
                         let consume = consume.min(arg_params.len().saturating_sub(arg_index));
                         let remaining: Vec<LuaType> = arg_params[arg_index..arg_index + consume]
                             .iter()
-                            .filter_map(|p| p.1.clone())
+                            .enumerate()
+                            .map(|(offset, (_, ty))| {
+                                let ty = ty.clone().unwrap_or(Unknown);
+                                if arg_fun.is_variadic()
+                                    && arg_index + offset + 1 == arg_params.len()
+                                    && !matches!(ty, Variadic(_))
+                                {
+                                    Variadic(Rc::new(VariadicType::Repeat(ty)))
+                                } else {
+                                    ty
+                                }
+                            })
                             .collect();
                         if let Variadic(variadic) = &param_ty
                             && let VariadicType::Base(base) = variadic.as_ref()
                             && let TplRef(tpl) = base
                             && !bindings.contains_key(&tpl.get_tpl_id())
                             && !remaining.is_empty()
-                            && remaining.iter().any(|t| !matches!(t, Unknown | Any))
+                            && arg_params[arg_index..arg_index + consume]
+                                .iter()
+                                .any(|(_, ty)| {
+                                    ty.as_ref().is_some_and(|t| !matches!(t, Unknown | Any))
+                                })
                             && !remaining.iter().any(|t| {
                                 matches!(
                                     t,
@@ -4024,28 +4041,18 @@ pub(crate) fn unify_call_bindings(
                                 )
                             })
                         {
-                            if remaining.len() == 1 {
-                                if !unify_call_bindings(
-                                    model,
-                                    &TplRef(tpl.clone()),
-                                    &remaining[0],
-                                    bindings,
-                                ) {
-                                    return false;
-                                }
+                            // 固定参数保留参数包长度, 可变尾部保留重复或展开语义.
+                            let pack_ty = if remaining.iter().any(|ty| matches!(ty, Variadic(_))) {
+                                Variadic(Rc::new(VariadicType::Multi(remaining)))
                             } else {
-                                let tuple_ty = Tuple(Rc::new(LuaTupleType::new(
+                                Tuple(Rc::new(LuaTupleType::new(
                                     remaining,
                                     LuaTupleStatus::InferResolve,
-                                )));
-                                if !unify_call_bindings(
-                                    model,
-                                    &TplRef(tpl.clone()),
-                                    &tuple_ty,
-                                    bindings,
-                                ) {
-                                    return false;
-                                }
+                                )))
+                            };
+                            if !unify_call_bindings(model, &TplRef(tpl.clone()), &pack_ty, bindings)
+                            {
+                                return false;
                             }
                         }
                         // The variadic slot only consumes actual function params; the param index
@@ -4386,7 +4393,7 @@ fn class_has_required_named_field(model: &SemanticModel, def: &TypeDef) -> bool 
             let Some(member) = facts.member_by_id(&member_ref.id) else {
                 continue;
             };
-            if !member.is_index_signature && !member.is_nullable {
+            if member.index_key_syntax.is_none() && !member.is_nullable {
                 return true;
             }
         }
@@ -4773,6 +4780,8 @@ pub(crate) fn reassign_function_generics_to_func_ids(fun: LuaFunctionType) -> Lu
 /// (recursively through Object structures).
 pub(crate) fn bind_signature_generics(ty: &LuaType, generics: &[GenericTpl]) -> LuaType {
     match ty {
+        // Conditional `infer` references already have their own scope.
+        LuaType::TplRef(tpl) if tpl.get_tpl_id().is_conditional_infer() => ty.clone(),
         LuaType::TplRef(tpl) => {
             if let Some(generic) = generics.iter().find(|generic| {
                 generic.get_tpl_id() == tpl.get_tpl_id() || generic.get_name() == tpl.get_name()
@@ -4784,19 +4793,8 @@ pub(crate) fn bind_signature_generics(ty: &LuaType, generics: &[GenericTpl]) -> 
         }
         LuaType::Ref(id) | LuaType::Def(id) => {
             let name = id.get_name();
-            if let Some((index, generic)) = generics
-                .iter()
-                .enumerate()
-                .find(|(_, generic)| generic.get_name() == name)
-            {
-                return LuaType::TplRef(Rc::new(GenericTpl::new(
-                    GenericTplId::Type(index as u32),
-                    SmolStr::new(name),
-                    generic.get_constraint().cloned(),
-                    generic.get_default_type().cloned(),
-                    generic.is_const(),
-                    None,
-                )));
+            if let Some(generic) = generics.iter().find(|generic| generic.get_name() == name) {
+                return LuaType::TplRef(Rc::new(generic.clone()));
             }
             ty.clone()
         }
@@ -4807,31 +4805,36 @@ pub(crate) fn bind_signature_generics(ty: &LuaType, generics: &[GenericTpl]) -> 
                 .map(|t| bind_signature_generics(t, generics))
                 .collect(),
         ))),
-        LuaType::Mapped(mapped) => LuaType::Mapped(Rc::new(LuaMappedType::new(
-            (
+        LuaType::Mapped(mapped) => {
+            let key = GenericTpl::new(
                 mapped.param.0,
-                GenericParam::new(
-                    mapped.param.1.name.clone(),
-                    mapped
-                        .param
-                        .1
-                        .constraint
-                        .as_ref()
-                        .map(|t| bind_signature_generics(t, generics)),
-                    mapped
-                        .param
-                        .1
-                        .default
-                        .as_ref()
-                        .map(|t| bind_signature_generics(t, generics)),
-                    mapped.param.1.is_const,
-                    mapped.param.1.attributes.clone(),
-                ),
-            ),
-            bind_signature_generics(&mapped.value, generics),
-            mapped.is_readonly,
-            mapped.is_optional,
-        ))),
+                mapped.param.1.name.clone(),
+                mapped
+                    .param
+                    .1
+                    .constraint
+                    .as_ref()
+                    .map(|ty| bind_signature_generics(ty, generics)),
+                mapped
+                    .param
+                    .1
+                    .default
+                    .as_ref()
+                    .map(|ty| bind_signature_generics(ty, generics)),
+                mapped.param.1.is_const,
+                mapped.param.1.attributes.clone(),
+            );
+            // The mapped key shadows an outer name only in the value type.
+            let mut scoped = generics.to_vec();
+            scoped.retain(|generic| generic.get_name() != key.get_name());
+            scoped.push(key.clone());
+            LuaType::Mapped(Rc::new(LuaMappedType::new(
+                (key.get_tpl_id(), key.get_param().clone()),
+                bind_signature_generics(&mapped.value, &scoped),
+                mapped.is_readonly,
+                mapped.is_optional,
+            )))
+        }
         LuaType::Generic(generic) => LuaType::Generic(Rc::new(LuaGenericType::new(
             generic.get_base_type_id(),
             generic
@@ -4873,7 +4876,16 @@ pub(crate) fn bind_signature_generics(ty: &LuaType, generics: &[GenericTpl]) -> 
                 .collect();
             LuaType::Object(Rc::new(LuaObjectType::new_with_fields(
                 fields,
-                object.get_index_access().to_vec(),
+                object
+                    .get_index_access()
+                    .iter()
+                    .map(|(key, value)| {
+                        (
+                            bind_signature_generics(key, generics),
+                            bind_signature_generics(value, generics),
+                        )
+                    })
+                    .collect(),
             )))
         }
         LuaType::Union(union) => LuaType::Union(Rc::new(LuaUnionType::from_vec(

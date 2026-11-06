@@ -1,9 +1,11 @@
 //! # param_type_check - call argument type does not match parameter type
 //!
 //! M0+: callee candidates = primary signature + `---@overload`; if any candidate accepts all arguments, don't report,
-//! otherwise pick the candidate with the fewest mismatches and report `ParamTypeMismatch` per argument. Colon calls:
+//! otherwise pick the candidate with the fewest mismatches. Table fields retain
+//! `AssignTypeMismatch`; other arguments use `ParamTypeMismatch`. Colon calls:
 //! strip one slot for the self parameter; plain functions treat the receiver as the first argument.
 
+use crate::semantic_model::type_check::{TypeCheckContext, integer_index_applies};
 use std::rc::Rc;
 
 use emmylua_parser::{
@@ -243,6 +245,7 @@ fn check_call(
             }
         }
     }
+
     let args = call_expr
         .get_args_list()
         .map(|list| list.get_args().collect::<Vec<_>>())
@@ -265,7 +268,7 @@ fn check_call(
     // Cheap candidate ordering: check likely overloads first so the common
     // “one candidate matches” case returns before running the expensive
     // parameter-by-parameter check on every other overload.
-    let mut ordered: Vec<&LuaFunctionType> = candidates.iter().collect();
+    let mut ordered = candidates_for_arg_count(semantic_model, &candidates, &args, colon_call);
     ordered.sort_by_key(|func| {
         quick_candidate_score(func, &analysis.arg_types, colon_call, &receiver_ty)
     });
@@ -354,6 +357,26 @@ fn check_call(
             context.add_diagnostic(mismatch.code, mismatch.range, message);
         }
     }
+}
+
+/// Check fields against a signature that accepts this argument count when possible.
+fn candidates_for_arg_count<'a>(
+    semantic_model: &SemanticModel<'_>,
+    candidates: &'a [LuaFunctionType],
+    args: &[LuaExpr],
+    colon_call: bool,
+) -> Vec<&'a LuaFunctionType> {
+    if candidates.len() > 1 {
+        let range = super::param_count::expanded_arg_range(semantic_model, args);
+        let matching = candidates
+            .iter()
+            .filter(|candidate| range.accepts(semantic_model, candidate, colon_call))
+            .collect::<Vec<_>>();
+        if !matching.is_empty() {
+            return matching;
+        }
+    }
+    candidates.iter().collect()
 }
 
 /// String literal overload names for a local `---@type fun(name: "A") | fun(name: "B")`.
@@ -655,6 +678,24 @@ fn cached_arg_type(
         .unwrap_or(LuaType::Unknown)
 }
 
+fn table_field_mismatches(
+    semantic_model: &SemanticModel<'_>,
+    param_ty: &LuaType,
+    arg: &LuaExpr,
+) -> Vec<Mismatch> {
+    let LuaExpr::TableExpr(table) = arg else {
+        return Vec::new();
+    };
+    super::assign_type_mismatch::table_field_mismatches(semantic_model, param_ty, table)
+        .into_iter()
+        .map(|mismatch| Mismatch {
+            code: DiagnosticCode::AssignTypeMismatch,
+            range: mismatch.range,
+            message: mismatch.message,
+        })
+        .collect()
+}
+
 fn check_arg_pairs(
     semantic_model: &SemanticModel<'_>,
     params: &[(String, Option<LuaType>)],
@@ -778,6 +819,8 @@ fn check_arg_pairs(
                             continue;
                         }
                         let param_ty = unify::substitute(&param_ty_orig, bindings);
+                        let param_ty = type_eval::expand_alias_generic(semantic_model, &param_ty);
+                        out.extend(table_field_mismatches(semantic_model, &param_ty, arg));
                         if arg_ty == param_ty
                             || param_generic_base_match(semantic_model, &arg_ty, &param_ty)
                             || is_compatible(semantic_model, &arg_ty, &param_ty)
@@ -1046,7 +1089,7 @@ fn generic_table_required_mismatch(
         let Some(member) = facts.member_by_id(&member_ref.id) else {
             continue;
         };
-        if member.is_nullable || member.is_index_signature {
+        if member.is_nullable || member.index_key_syntax.is_some() {
             continue;
         }
         if !provided.contains(&member_ref.name.to_string()) {
@@ -1095,12 +1138,11 @@ fn object_array_compatible(
             return true;
         }
     }
-    for (key_ty, value_ty) in object.get_index_access() {
-        let numeric = matches!(
-            key_ty,
-            LuaType::Integer | LuaType::Number | LuaType::IntegerConst(_)
-        );
-        if numeric && try_value(value_ty, bindings) {
+    let mut context = TypeCheckContext::new(semantic_model, false);
+    for info in semantic_model.index_infos(arg_ty) {
+        if integer_index_applies(&mut context, &info.key_type).unwrap_or(false)
+            && try_value(&info.value_type, bindings)
+        {
             return true;
         }
     }

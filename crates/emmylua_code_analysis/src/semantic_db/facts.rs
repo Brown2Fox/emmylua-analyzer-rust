@@ -23,10 +23,6 @@ use crate::semantic_db::def::SignatureReturnCast;
 
 use super::index::{Bucket, build_buckets, find_bucket};
 
-// ──────────────────────────────────────────────
-// Type definitions (from def/, with global SemanticId identity)
-// ──────────────────────────────────────────────
-
 use super::def::{
     ConstructorAttribute, ConstructorReturnMode, Decl, DeclKind, DocGenericParam, LuaMemberKey,
     Member, ModuleExport, ModuleVisibility, NameUse, OperatorDef, Scope, ScopeChild, ScopeKind,
@@ -41,6 +37,24 @@ use emmylua_parser::VisibilityKind;
 pub struct DiagnosticDisable {
     pub range: TextRange,
     pub code: Option<DiagnosticCode>,
+}
+
+/// Whether a doc-comment owner declares a function value (and therefore an
+/// `---@overload` tag belongs to its signature, not to a surrounding class).
+fn doc_owner_has_function_value(owner: &LuaAst) -> bool {
+    match owner {
+        LuaAst::LuaFuncStat(_) | LuaAst::LuaLocalFuncStat(_) => true,
+        LuaAst::LuaLocalStat(stat) => stat
+            .get_value_exprs()
+            .any(|expr| matches!(expr, LuaExpr::ClosureExpr(_))),
+        LuaAst::LuaAssignStat(stat) => {
+            let (_, exprs) = stat.get_var_and_expr_list();
+            exprs
+                .iter()
+                .any(|expr| matches!(expr, LuaExpr::ClosureExpr(_)))
+        }
+        _ => false,
+    }
 }
 
 /// Doc annotation usage error (consumed by analyze_error checker; currently only `@field` without a `@class` context).
@@ -90,7 +104,7 @@ pub struct FileFacts {
     pub usings: Vec<SmolStr>,
     /// `---@diagnostic disable-next-line/disable-line/disable` annotations (range-matched).
     pub diagnostic_disables: Vec<DiagnosticDisable>,
-    /// File-level `---@diagnostic disable: code`.
+    /// File-level `---@diagnostic disable: code` (all codes when the code list is empty).
     pub file_diagnostic_disabled: HashSet<DiagnosticCode>,
     /// File-level `---@diagnostic enable: code` (force-enable, overriding global config disables).
     pub file_diagnostic_enabled: HashSet<DiagnosticCode>,
@@ -117,7 +131,6 @@ pub struct FileFacts {
     members_by_name: HashMap<SmolStr, Vec<usize>>,
     type_def_by_full_name: HashMap<SmolStr, usize>,
     type_def_by_name: HashMap<SmolStr, usize>,
-    type_defs_by_lower_name: HashMap<SmolStr, Vec<usize>>,
     type_defs_by_name_end: Vec<(TextSize, usize)>,
     type_defs_by_owner_syntax: HashMap<LuaSyntaxId, Vec<usize>>,
     decl_by_value_syntax: HashMap<LuaSyntaxId, usize>,
@@ -279,21 +292,8 @@ impl FileFacts {
             .filter(|def| def.name_range == range)
     }
 
-    /// Type definitions whose own name or full-name tail matches `name` case-insensitively.
-    pub fn type_defs_named_case_insensitive(&self, name: &str) -> impl Iterator<Item = &TypeDef> {
-        let key = SmolStr::new(name.to_ascii_lowercase());
-        self.type_defs_by_lower_name
-            .get(&key)
-            .into_iter()
-            .flat_map(move |indices| {
-                indices
-                    .iter()
-                    .filter_map(|&index| self.type_defs.get(index))
-            })
-    }
-
-    /// Nearest type definition whose name ends before `start` (used to associate
-    /// differently-named runtime tables with their preceding `---@enum`/`---@class`).
+    /// Nearest type definition whose name ends before `start` (positional lookup only; it is
+    /// not a binding relation, use [`Self::type_defs_by_owner_syntax`] for that).
     pub fn nearest_type_def_before(&self, start: TextSize) -> Option<&TypeDef> {
         let index = self
             .type_defs_by_name_end
@@ -969,21 +969,6 @@ impl FactsBuilder {
             .enumerate()
             .map(|(i, def)| (def.name.clone(), i))
             .collect::<HashMap<_, _>>();
-        let mut type_defs_by_lower_name: HashMap<SmolStr, Vec<usize>> = HashMap::new();
-        for (index, def) in self.type_defs.iter().enumerate() {
-            type_defs_by_lower_name
-                .entry(SmolStr::new(def.name.to_ascii_lowercase()))
-                .or_default()
-                .push(index);
-            if let Some(bare_name) = def.full_name.rsplit('.').next()
-                && bare_name != def.name.as_str()
-            {
-                type_defs_by_lower_name
-                    .entry(SmolStr::new(bare_name.to_ascii_lowercase()))
-                    .or_default()
-                    .push(index);
-            }
-        }
         let mut type_defs_by_name_end = self
             .type_defs
             .iter()
@@ -1096,7 +1081,6 @@ impl FactsBuilder {
             members_by_name,
             type_def_by_full_name,
             type_def_by_name,
-            type_defs_by_lower_name,
             type_defs_by_name_end,
             type_defs_by_owner_syntax,
             decl_by_value_syntax,
@@ -1110,7 +1094,8 @@ impl FactsBuilder {
     }
 
     fn collect_doc_comment(&mut self, comment: &LuaComment, text: &str) {
-        let owner_syntax = comment.get_owner().map(|owner| owner.get_syntax_id());
+        let owner = comment.get_owner();
+        let owner_syntax = owner.as_ref().map(|owner| owner.get_syntax_id());
         if let Some(owner_syntax) = owner_syntax {
             self.doc_comment_owners.insert(owner_syntax);
         }
@@ -1347,12 +1332,10 @@ impl FactsBuilder {
                     if let Some(doc_type) = overload_tag.get_type() {
                         // Comment block on a function statement → signature overload;
                         // `---@overload` immediately after `---@class X` → type call overload.
-                        let owner_is_function = owner_syntax.is_some_and(|owner| {
-                            matches!(
-                                owner.get_kind(),
-                                LuaSyntaxKind::FuncStat | LuaSyntaxKind::LocalFuncStat
-                            )
-                        });
+                        // Function values assigned in a local/assignment statement
+                        // (`local add = function(...)`) also document the signature.
+                        let owner_is_function =
+                            owner.as_ref().is_some_and(doc_owner_has_function_value);
                         if !owner_is_function
                             && let Some(type_def_id) = self.current_class.clone()
                             && let Some(def) =
@@ -1464,9 +1447,12 @@ impl FactsBuilder {
                     .as_ref()
                     .is_some_and(|block| block.get_parent::<LuaChunk>().is_some());
                 if is_file_disable {
-                    for code in codes {
-                        self.file_diagnostic_disabled.insert(code);
-                    }
+                    let codes = if codes.is_empty() {
+                        DiagnosticCode::all()
+                    } else {
+                        codes
+                    };
+                    self.file_diagnostic_disabled.extend(codes);
                 } else if let Some(block) = owner_block {
                     push_diagnostic_disables(
                         &mut self.diagnostic_disables,
@@ -1494,8 +1480,13 @@ impl FactsBuilder {
                 push_diagnostic_disables(&mut self.diagnostic_disables, line_range, codes);
             }
             "enable" => {
-                for code in codes {
-                    self.file_diagnostic_enabled.insert(code);
+                if codes.is_empty() {
+                    self.file_diagnostic_disabled.clear();
+                } else {
+                    for code in codes {
+                        self.file_diagnostic_disabled.remove(&code);
+                        self.file_diagnostic_enabled.insert(code);
+                    }
                 }
             }
             _ => {}
@@ -1552,6 +1543,7 @@ impl FactsBuilder {
         };
         // Integer keys in `@field [1]` are encoded as `LuaMemberKey::Integer` (matching index expression keys).
         let member_key = match &key {
+            LuaDocFieldKey::Type(_) => LuaMemberKey::None,
             LuaDocFieldKey::Integer(token) => match token.get_number_value() {
                 NumberResult::Int(i) => LuaMemberKey::Integer(i),
                 _ => LuaMemberKey::Name(doc_field_key_name(&key)),
@@ -1566,7 +1558,10 @@ impl FactsBuilder {
             member_key,
             type_def_id,
         );
-        member.is_index_signature = matches!(key, LuaDocFieldKey::Type(_));
+        member.index_key_syntax = match &key {
+            LuaDocFieldKey::Type(ty) => Some(ty.get_syntax_id()),
+            _ => None,
+        };
         member.is_nullable = field_tag.is_nullable();
         member.value_syntax = field_tag
             .get_type()

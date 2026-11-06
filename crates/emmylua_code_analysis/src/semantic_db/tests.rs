@@ -1858,6 +1858,68 @@ fn test_signature_doc_generic_and_flags() {
 }
 
 #[test]
+fn test_signature_doc_overload_for_assigned_function_value() {
+    let mut db = setup();
+    let fid = set_test_file(
+        &mut db,
+        1,
+        "a.lua",
+        "---@class demo\n\
+         local M = {}\n\
+         \n\
+         ---@overload fun(x: string): number\n\
+         local f = function(x)\n\
+             return 1\n\
+         end\n\
+         \n\
+         return M",
+    );
+
+    let facts = db.analysis().file_facts(fid).expect("facts");
+    let sig = facts
+        .signatures
+        .iter()
+        .find(|sig| {
+            sig.docs
+                .as_ref()
+                .is_some_and(|docs| !docs.overloads.is_empty())
+        })
+        .expect("signature with @overload");
+    assert_eq!(sig.docs.as_ref().expect("docs").overloads.len(), 1);
+    let demo = facts.type_def_by_name("demo").expect("demo");
+    assert!(
+        demo.call_overloads.is_empty(),
+        "@overload of an assigned function value must not become a type call overload"
+    );
+}
+
+#[test]
+fn test_type_doc_overload_after_class() {
+    let mut db = setup();
+    let fid = set_test_file(
+        &mut db,
+        1,
+        "a.lua",
+        "---@class Callable\n\
+         ---@overload fun(x: number): string\n\
+         local Callable = {}\n\
+         \n\
+         return Callable",
+    );
+
+    let facts = db.analysis().file_facts(fid).expect("facts");
+    let callable = facts.type_def_by_name("Callable").expect("Callable");
+    assert_eq!(callable.call_overloads.len(), 1);
+    assert!(
+        facts.signatures.iter().all(|sig| sig
+            .docs
+            .as_ref()
+            .is_none_or(|docs| docs.overloads.is_empty())),
+        "@overload of a class must not become a signature overload"
+    );
+}
+
+#[test]
 fn test_signature_doc_return_overload() {
     let mut db = setup();
     let fid = set_test_file(
@@ -2113,10 +2175,10 @@ fn test_multi_workspace_roots_and_module_index() {
         "return {}",
     );
 
-    assert_eq!(db.workspace_id_of(std_fid), Some(WorkspaceId::STD));
-    assert_eq!(db.workspace_id_of(main_fid), Some(WorkspaceId::MAIN));
-    assert_eq!(db.workspace_id_of(lib1_fid), Some(WorkspaceId { id: 3 }));
-    assert_eq!(db.workspace_id_of(lib2_fid), Some(WorkspaceId { id: 4 }));
+    assert_eq!(db.workspace_id_of(std_fid), Some(WorkspaceId::Std));
+    assert_eq!(db.workspace_id_of(main_fid), Some(WorkspaceId::Main));
+    assert_eq!(db.workspace_id_of(lib1_fid), Some(WorkspaceId::Library(1)));
+    assert_eq!(db.workspace_id_of(lib2_fid), Some(WorkspaceId::Library(2)));
 
     assert_eq!(db.module_name_of(main_fid).as_deref(), Some("main"));
     assert_eq!(db.module_name_of(lib1_fid).as_deref(), Some("mod"));
@@ -2135,7 +2197,7 @@ fn test_multi_workspace_roots_and_module_index() {
 
     let info = db.module_info_of(lib1_fid).expect("module info");
     assert_eq!(info.full_module_name, "mod");
-    assert_eq!(info.workspace_id, WorkspaceId { id: 3 });
+    assert_eq!(info.workspace_id, WorkspaceId::Library(1));
 
     // Module tree node API
     let node_id = db.module_node("mod").expect("module node");
@@ -2233,7 +2295,7 @@ fn test_relative_fixture_paths_are_rejected_by_uri_and_workspace_lookup() {
         "local a = 1".to_string(),
     );
     assert!(db.file_uri(fid_abs).is_some());
-    assert_eq!(db.workspace_id_of(fid_abs), Some(WorkspaceId::MAIN));
+    assert_eq!(db.workspace_id_of(fid_abs), Some(WorkspaceId::Main));
 }
 
 #[test]

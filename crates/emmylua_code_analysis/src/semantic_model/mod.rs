@@ -1,5 +1,6 @@
 pub(crate) mod cache;
 pub mod flow;
+pub mod index_signature;
 pub mod infer;
 pub mod member;
 pub mod render;
@@ -7,6 +8,7 @@ pub mod type_check;
 pub mod type_eval;
 
 mod access;
+mod builtin;
 mod doc_types;
 mod value_reference;
 mod prelude;
